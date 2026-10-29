@@ -144,7 +144,9 @@ export default class WpeBackground extends Extension {
         for (let i = 0; i < global.display.get_n_monitors(); i++) {
             const g = global.display.get_monitor_geometry(i);
             const argv = ['setsid', 'linux-wallpaperengine',
-                ...(volume > 0 && i === primary ? ['--volume', `${volume}`] : ['--silent']),
+                // --noautomute: the automute treats any open audio stream as "playing", and apps like Discord keep one
+                // open all the time, so the wallpaper stayed silent while they ran
+                ...(volume > 0 && i === primary ? ['--volume', `${volume}`, '--noautomute'] : ['--silent']),
                 '--fps', `${fps}`, '--window', `${g.x}x${g.y}x${g.width}x${g.height}`, '--scaling', 'fill',
                 ...props, cfg.dir];
             try {
