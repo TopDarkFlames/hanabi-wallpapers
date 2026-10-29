@@ -1,0 +1,20 @@
+--- a/PKGBUILD
++++ b/PKGBUILD
+@@ -9,7 +9,7 @@
+ arch=(any)
+ url=https://github.com/jeffshee/gnome-ext-hanabi
+ license=(GPL3)
+-makedepends=(meson)
++makedepends=(meson npm)
+ depends=(
+         'gnome-shell'
+         'gjs'
+@@ -35,6 +35,8 @@
+ }
+ 
+ build() {
++	sed -i 's/"50"/"50", "51"/' gnome-ext-hanabi/src/metadata.json.in
++	(cd gnome-ext-hanabi && npm ci && npm run build)
+ 	arch-meson gnome-ext-hanabi build
+ }
+ 

@@ -1,0 +1,710 @@
+#!/usr/bin/env python3
+"""Seletor de wallpapers no estilo do Wallpaper Engine, para o Hanabi.
+
+Vídeos são aplicados no Hanabi; scene/web abrem um preview ao vivo no linux-wallpaperengine,
+porque o GNOME não deixa nada além do Hanabi desenhar no fundo.
+"""
+import collections
+import glob
+import json
+import math
+import os
+import random
+import re
+import subprocess
+import sys
+
+import cairo
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+gi.require_version("GdkPixbuf", "2.0")
+gi.require_version("Graphene", "1.0")
+from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Graphene, Gtk  # noqa: E402
+
+STEAM = os.path.expanduser("~/.steam/steam/steamapps")
+WORKSHOP = os.path.join(STEAM, "workshop/content/431960")
+PROJECTS = os.path.join(STEAM, "common/wallpaper_engine/projects")
+SCHEMA = "io.github.jeffshee.hanabi-extension"
+KIND_LABEL = {"video": "VÍDEO", "scene": "SCENE", "web": "WEB"}
+KIND_COLOR = {"video": (0.18, 0.90, 0.65), "scene": (0.66, 0.44, 1.0), "web": (1.0, 0.71, 0.28)}
+FITS = ["Esticar", "Mostrar inteiro", "Preencher (cortar)", "Só reduzir"]  # ordem do GtkContentFit
+
+CSS = """
+window.picker { background: #111318; color: #c7d5e0; }
+.backdrop { filter: blur(40px) brightness(0.22) saturate(1.5); }
+.veil { background: linear-gradient(180deg, alpha(#111318,0.35), alpha(#111318,0.9)); }
+
+headerbar.top { background: alpha(#0b0d11,0.75); border-bottom: 1px solid alpha(white,0.05);
+                box-shadow: 0 1px 24px alpha(black,0.5); min-height: 46px; }
+.brand { font-weight: 900; letter-spacing: 4px; font-size: 15px; color: white; margin: 0 14px 0 6px;
+         animation: glow 3.2s ease-in-out infinite; }
+@keyframes glow {
+  0%   { text-shadow: 0 0 6px alpha(@accent_bg_color,0.3); }
+  50%  { text-shadow: 0 0 22px alpha(@accent_bg_color,1), 0 0 2px white; }
+  100% { text-shadow: 0 0 6px alpha(@accent_bg_color,0.3); }
+}
+.tab { background: none; border-radius: 0; padding: 0 10px; min-height: 46px; font-size: 12px; color: alpha(#c7d5e0,0.6);
+       font-weight: 800; letter-spacing: 1px; box-shadow: inset 0 0 0 0 @accent_bg_color;
+       transition: all 220ms ease; }
+.tab:hover { color: white; background: alpha(white,0.04); }
+.tab:checked { color: white; background: linear-gradient(0deg, alpha(@accent_bg_color,0.22), transparent);
+               box-shadow: inset 0 -3px 0 0 @accent_bg_color; }
+entry.search { background: alpha(white,0.06); border-radius: 6px; min-height: 34px; color: white;
+               border: 1px solid alpha(white,0.08); transition: all 200ms ease; }
+entry.search:focus-within { border-color: @accent_bg_color; box-shadow: 0 0 16px alpha(@accent_bg_color,0.5); }
+
+flowboxchild { padding: 0; background: none; outline: none; }
+.card { border-radius: 6px; background: #0b0d11; border: 1px solid alpha(white,0.06);
+        box-shadow: 0 4px 14px alpha(black,0.6); transition: box-shadow 220ms ease, border-color 220ms ease; }
+.card.hot { border-color: alpha(@accent_bg_color,0.95);
+            box-shadow: 0 0 0 1px alpha(@accent_bg_color,0.7), 0 0 30px alpha(@accent_bg_color,0.55),
+                        0 18px 40px alpha(black,0.8); }
+.card.selected { border-color: white; box-shadow: 0 0 0 2px white, 0 0 26px alpha(white,0.35); }
+.card.active { border-color: @accent_bg_color; animation: pulse 2.4s ease-in-out infinite; }
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 2px @accent_bg_color, 0 0 12px alpha(@accent_bg_color,0.35); }
+  50%  { box-shadow: 0 0 0 3px @accent_bg_color, 0 0 40px alpha(@accent_bg_color,0.9); }
+  100% { box-shadow: 0 0 0 2px @accent_bg_color, 0 0 12px alpha(@accent_bg_color,0.35); }
+}
+.title-bar { background: linear-gradient(180deg, transparent, alpha(black,0.92)); padding: 22px 8px 6px 8px; }
+.card-title { color: white; font-size: 11px; font-weight: 700; text-shadow: 0 1px 3px black; }
+.badge { border-radius: 3px; padding: 1px 6px; font-size: 9px; font-weight: 900; margin: 6px; letter-spacing: 1px; }
+.badge.active { background: @accent_bg_color; color: @accent_fg_color; }
+.badge.video { background: alpha(#2ee6a6,0.92); color: #04150f; }
+.badge.scene { background: alpha(#a970ff,0.92); color: #12052a; }
+.badge.web { background: alpha(#ffb547,0.92); color: #2a1702; }
+
+.panel { background: alpha(#191c23,0.88); border-left: 1px solid alpha(white,0.06);
+         box-shadow: -10px 0 40px alpha(black,0.5); }
+.big-preview { border-radius: 8px; border: 1px solid alpha(@accent_bg_color,0.6);
+               box-shadow: 0 0 34px alpha(@accent_bg_color,0.35), 0 14px 40px alpha(black,0.7); }
+.panel-title { font-size: 16px; font-weight: 900; color: white; }
+.meta { color: alpha(#c7d5e0,0.55); font-size: 12px; }
+.desc { color: alpha(#c7d5e0,0.8); }
+.tag { background: alpha(white,0.07); border-radius: 3px; padding: 2px 8px; font-size: 11px;
+       color: alpha(#c7d5e0,0.85); }
+.section { font-weight: 900; letter-spacing: 2px; font-size: 11px; color: alpha(#c7d5e0,0.45); }
+.apply { min-height: 38px; border-radius: 6px; font-weight: 900; letter-spacing: 2px; color: white;
+         background-image: linear-gradient(110deg, @accent_bg_color 30%, mix(@accent_bg_color,white,0.45) 50%,
+                                           @accent_bg_color 70%);
+         background-size: 300% 100%; animation: shimmer 2.6s linear infinite;
+         box-shadow: 0 0 24px alpha(@accent_bg_color,0.55); }
+.apply:hover { box-shadow: 0 0 40px alpha(@accent_bg_color,0.9); }
+@keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0% 0; } }
+.ghost { border-radius: 6px; background: alpha(white,0.06); color: #c7d5e0; font-weight: 700; }
+.ghost:hover { background: alpha(white,0.12); }
+"""
+
+
+def _read(pj):
+    try:
+        with open(pj, encoding="utf-8-sig") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _kind(j):
+    kind = str(j.get("type") or "").lower()
+    if not kind:  # projetos oficiais antigos não têm "type"
+        kind = {".mp4": "video", ".webm": "video", ".json": "scene", ".html": "web"}.get(
+            os.path.splitext(j.get("file") or "")[1].lower(), "")
+    return kind
+
+
+def load_wallpapers():
+    """Tudo que está instalado: Workshop inscrito + projetos do próprio Wallpaper Engine."""
+    items = []
+    sources = [(os.path.join(WORKSHOP, "*", "project.json"), "Workshop"),
+               (os.path.join(PROJECTS, "defaultprojects", "*", "project.json"), "Oficial"),
+               (os.path.join(PROJECTS, "myprojects", "*", "project.json"), "Meus projetos")]
+    for pattern, source in sources:
+        for pj in glob.glob(pattern):
+            j = _read(pj)
+            if not j:
+                continue
+            d = os.path.dirname(os.path.realpath(pj))
+            src_dir, src = d, j
+            if not j.get("type") and j.get("dependency"):  # preset: o conteúdo está no item de que depende
+                dep = os.path.join(WORKSHOP, str(j["dependency"]))
+                dj = _read(os.path.join(dep, "project.json"))
+                if not dj:
+                    continue
+                src_dir, src = os.path.realpath(dep), dj
+            kind = _kind(src)
+            if kind not in KIND_LABEL:
+                continue
+            video = os.path.join(src_dir, src.get("file") or "") if kind == "video" else None
+            if video and not os.path.isfile(video):
+                continue
+            preview = os.path.join(d, j.get("preview") or "")
+            desc = re.sub(r"\[/?[^\]]*\]", "", str(j.get("description") or src.get("description") or "")).strip()
+            items.append({
+                "title": (j.get("title") or os.path.basename(d)).strip(),
+                "kind": kind,
+                "dir": src_dir,
+                "video": video,
+                "preview": preview if os.path.isfile(preview) else None,
+                "desc": desc,
+                "tags": [str(t) for t in (j.get("tags") or src.get("tags") or [])],
+                "source": source,
+                "id": os.path.basename(d) if source == "Workshop" else None,
+            })
+    return sorted(items, key=lambda i: (i["kind"] != "video", i["title"].lower()))
+
+
+class AnimPic(Gtk.Picture):
+    """Picture que mostra a miniatura parada ou anima (vídeo pelo GStreamer, GIF pelo GdkPixbuf)."""
+
+    def __init__(self, **kw):
+        super().__init__(content_fit=Gtk.ContentFit.COVER, can_shrink=True, **kw)
+        self.gen = 0
+        self.media = None
+
+    def show(self, item, animate=False):
+        self.gen += 1
+        if self.media:
+            self.media.pause()
+            self.media = None
+        prev = item["preview"] or ""
+        if prev and not prev.endswith(".mp4"):
+            self.set_filename(prev)
+        else:
+            self.set_paintable(None)
+        if not animate:
+            return
+        if item["video"] or prev.endswith(".mp4"):
+            self.media = Gtk.MediaFile.new_for_filename(item["video"] or prev)
+            self.media.set_muted(True)
+            self.media.set_loop(True)
+            self.media.play()
+            self.set_paintable(self.media)
+        elif prev.endswith(".gif"):
+            Gio.File.new_for_path(prev).read_async(GLib.PRIORITY_DEFAULT, None, self._gif_stream, self.gen)
+
+    def _gif_stream(self, f, res, gen):
+        try:
+            GdkPixbuf.PixbufAnimation.new_from_stream_async(f.read_finish(res), None, self._gif_ready, gen)
+        except GLib.Error:
+            pass
+
+    def _gif_ready(self, _src, res, gen):
+        try:
+            anim = GdkPixbuf.PixbufAnimation.new_from_stream_finish(res)
+        except GLib.Error:
+            return
+        if gen == self.gen and not anim.is_static_image():
+            self._gif_step(anim.get_iter(None), gen)
+
+    def _gif_step(self, it, gen):
+        if gen != self.gen:
+            return GLib.SOURCE_REMOVE
+        self.set_paintable(Gdk.Texture.new_for_pixbuf(it.get_pixbuf()))
+        delay = it.get_delay_time()
+        it.advance(None)
+        if delay > 0:
+            GLib.timeout_add(max(delay, 20), self._gif_step, it, gen)
+        return GLib.SOURCE_REMOVE
+
+
+class Particles(Gtk.DrawingArea):
+    """Camada de partículas desenhada com cairo: brasas ambiente atrás, explosões na frente."""
+
+    def __init__(self, ambient):
+        super().__init__(can_target=False, hexpand=True, vexpand=True)
+        self.ambient = ambient
+        self.parts, self.rings, self.flash = [], [], 0.0
+        self.last = None
+        self.accent = (0.6, 0.4, 1.0)
+        self.set_draw_func(self.draw)
+        self.add_tick_callback(self.tick)
+
+    def spawn_ember(self, w, h, anywhere=False):
+        c = random.choice([self.accent, (0.3, 0.9, 1.0), (1.0, 0.45, 0.75)])
+        self.parts.append(dict(x=random.uniform(0, w), y=random.uniform(0, h) if anywhere else h + 10,
+                               vx=random.uniform(-8, 8), vy=random.uniform(-38, -12), r=random.uniform(1.2, 3.6),
+                               life=random.uniform(6, 14), age=0.0, ph=random.uniform(0, 6.3), c=c, g=0.0))
+
+    def burst(self, x, y, color):
+        self.rings.append(dict(x=x, y=y, age=0.0, c=color))
+        self.rings.append(dict(x=x, y=y, age=-0.12, c=(1, 1, 1)))
+        self.flash = 0.35
+        for _ in range(110):
+            a, s = random.uniform(0, math.tau), random.uniform(120, 760)
+            c = color if random.random() < 0.7 else (1, 1, 1)
+            self.parts.append(dict(x=x, y=y, vx=math.cos(a) * s, vy=math.sin(a) * s, r=random.uniform(1.2, 3.2),
+                                   life=random.uniform(0.5, 1.4), age=0.0, ph=0.0, c=c, g=900.0))
+
+    def tick(self, _w, clock):
+        now = clock.get_frame_time() / 1e6
+        dt = min(now - self.last, 0.05) if self.last else 0.016
+        self.last = now
+        w, h = self.get_width(), self.get_height()
+        if self.ambient and w > 0:
+            first = not self.parts
+            while len(self.parts) < int(w * h / 14000):
+                self.spawn_ember(w, h, anywhere=first)
+        for p in self.parts:
+            p["age"] += dt
+            if p["g"]:
+                p["vx"] *= 1 - 1.6 * dt
+            p["vy"] += p["g"] * dt
+            p["x"] += (p["vx"] + (0 if p["g"] else math.sin(p["age"] * 1.3 + p["ph"]) * 14)) * dt
+            p["y"] += p["vy"] * dt
+        self.parts = [p for p in self.parts if p["age"] < p["life"] and p["y"] > -20]
+        for r in self.rings:
+            r["age"] += dt
+        self.rings = [r for r in self.rings if r["age"] < 0.9]
+        self.flash = max(0.0, self.flash - dt * 1.4)
+        if self.parts or self.rings or self.flash:
+            self.queue_draw()
+        return GLib.SOURCE_CONTINUE
+
+    def draw(self, _area, cr, w, h):
+        cr.set_operator(cairo.OPERATOR_ADD)
+        for p in self.parts:
+            t = p["age"] / p["life"]
+            a = ((1 - t) ** 1.5 if p["g"] else
+                 math.sin(min(t, 1) * math.pi) * (0.55 + 0.45 * math.sin(p["age"] * 4 + p["ph"])))
+            r = p["r"] * (3 if p["g"] else 4)
+            g = cairo.RadialGradient(p["x"], p["y"], 0, p["x"], p["y"], r)
+            g.add_color_stop_rgba(0, 1, 1, 1, a)
+            g.add_color_stop_rgba(0.25, *p["c"], a * 0.8)
+            g.add_color_stop_rgba(1, *p["c"], 0)
+            cr.set_source(g)
+            cr.arc(p["x"], p["y"], r, 0, math.tau)
+            cr.fill()
+        for ring in self.rings:
+            t = ring["age"] / 0.9
+            if t < 0:
+                continue
+            cr.set_source_rgba(*ring["c"], (1 - t) * 0.9)
+            cr.set_line_width(14 * (1 - t) + 1)
+            cr.arc(ring["x"], ring["y"], 20 + (1 - (1 - t) ** 3) * 340, 0, math.tau)
+            cr.stroke()
+        if self.flash:
+            cr.set_source_rgba(*self.accent, self.flash * 0.35)
+            cr.paint()
+
+
+class Card(Gtk.Widget):
+    """Miniatura quadrada com inclinação 3D que segue o mouse, reflexo de luz e preview animado no hover."""
+
+    SIZE = 140
+
+    def __init__(self, item):
+        super().__init__()
+        self.item = item
+        self.tx = self.ty = self.gx = self.gy = 0.0
+        self.h = self.hg = 0.0
+        self.mx = self.my = 0.0
+        self.intro = 0.0
+        self.ticking = False
+        self.loaded = False
+
+        self.box = Gtk.Overlay(overflow=Gtk.Overflow.HIDDEN)
+        self.box.add_css_class("card")
+        self.box.set_size_request(self.SIZE, self.SIZE)
+        self.box.set_parent(self)
+        self.pic = AnimPic()
+        self.box.set_child(self.pic)
+
+        self.bar = Gtk.Revealer(child=Gtk.Label(label=item["title"], xalign=0, ellipsize=3),
+                                transition_type=Gtk.RevealerTransitionType.SLIDE_UP,
+                                transition_duration=220, valign=Gtk.Align.END)
+        self.bar.add_css_class("title-bar")
+        self.bar.get_child().add_css_class("card-title")
+        self.box.add_overlay(self.bar)
+
+        kind = Gtk.Label(label=KIND_LABEL[item["kind"]], halign=Gtk.Align.START, valign=Gtk.Align.START)
+        kind.add_css_class("badge")
+        kind.add_css_class(item["kind"])
+        self.box.add_overlay(kind)
+        self.badge = Gtk.Label(label="★", halign=Gtk.Align.END, valign=Gtk.Align.START, visible=False)
+        self.badge.add_css_class("badge")
+        self.badge.add_css_class("active")
+        self.box.add_overlay(self.badge)
+
+        motion = Gtk.EventControllerMotion()
+        motion.connect("enter", self.on_enter)
+        motion.connect("motion", self.on_motion)
+        motion.connect("leave", self.on_leave)
+        self.add_controller(motion)
+        self.set_cursor(Gdk.Cursor.new_from_name("pointer"))
+        self.set_tooltip_text(item["title"])
+
+    def do_measure(self, orientation, for_size):
+        return self.box.measure(orientation, for_size)
+
+    def do_size_allocate(self, w, h, baseline):
+        self.box.allocate(w, h, baseline, None)
+
+    def do_snapshot(self, s):
+        w, h = self.get_width(), self.get_height()
+        intro = max(0.0, min(self.intro, 1.0))
+        if intro <= 0:
+            return
+        s.save()
+        s.translate(Graphene.Point().init(w / 2, h / 2 + (1 - self.intro) * 60))
+        s.perspective(900)
+        s.rotate_3d(-self.ty * 14, Graphene.Vec3.x_axis())
+        s.rotate_3d(self.tx * 14, Graphene.Vec3.y_axis())
+        sc = (0.8 + 0.2 * self.intro) * (1 + 0.09 * self.h)
+        s.scale(sc, sc)
+        s.translate(Graphene.Point().init(-w / 2, -h / 2))
+        if intro < 1:
+            s.push_opacity(intro)
+        self.snapshot_child(self.box, s)
+        if self.h > 0.01:  # reflexo de luz que segue o mouse
+            cr = s.append_cairo(Graphene.Rect().init(0, 0, w, h))
+            cr.rectangle(0, 0, w, h)
+            g = cairo.RadialGradient(self.mx, self.my, 0, self.mx, self.my, w)
+            g.add_color_stop_rgba(0, 1, 1, 1, 0.32 * self.h)
+            g.add_color_stop_rgba(0.4, 1, 1, 1, 0.07 * self.h)
+            g.add_color_stop_rgba(1, 1, 1, 1, 0)
+            cr.set_source(g)
+            cr.fill()
+        if intro < 1:
+            s.pop()
+        s.restore()
+
+    def animate(self):
+        if not self.ticking:
+            self.ticking = True
+            self.add_tick_callback(self.tick)
+
+    def tick(self, *_):
+        k = 0.2
+        self.tx += (self.gx - self.tx) * k
+        self.ty += (self.gy - self.ty) * k
+        self.h += (self.hg - self.h) * k
+        self.queue_draw()
+        done = abs(self.gx - self.tx) + abs(self.gy - self.ty) + abs(self.hg - self.h) < 0.002
+        if done:
+            self.ticking = False
+        return GLib.SOURCE_REMOVE if done else GLib.SOURCE_CONTINUE
+
+    def on_enter(self, c, x, y):
+        self.hg = 1.0
+        self.box.add_css_class("hot")
+        self.bar.set_reveal_child(True)
+        self.pic.show(self.item, animate=True)
+        self.on_motion(c, x, y)
+
+    def on_motion(self, _c, x, y):
+        w, h = max(self.get_width(), 1), max(self.get_height(), 1)
+        self.mx, self.my = x, y
+        self.gx, self.gy = x / w * 2 - 1, y / h * 2 - 1
+        self.animate()
+
+    def on_leave(self, _c):
+        self.gx = self.gy = self.hg = 0.0
+        self.box.remove_css_class("hot")
+        self.bar.set_reveal_child(False)
+        self.pic.show(self.item)
+        self.animate()
+
+    def load_thumb(self):
+        if not self.loaded:
+            self.loaded = True
+            self.pic.show(self.item)
+
+    def set_flag(self, flag, on):
+        (self.box.add_css_class if on else self.box.remove_css_class)(flag)
+        if flag == "active":
+            self.badge.set_visible(on)
+
+
+class Panel(Gtk.Box):
+    """Painel lateral de detalhes, como o do Wallpaper Engine."""
+
+    def __init__(self, win):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=12, width_request=320)
+        self.win = win
+        self.item = None
+        self.add_css_class("panel")
+        inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                        margin_start=16, margin_end=16, margin_top=16, margin_bottom=16)
+        scroll = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER, child=inner)
+        self.append(scroll)
+
+        frame = Gtk.AspectFrame(ratio=16 / 9, obey_child=False, overflow=Gtk.Overflow.HIDDEN)
+        frame.add_css_class("big-preview")
+        self.preview = AnimPic()
+        frame.set_child(self.preview)
+        inner.append(frame)
+
+        self.title = Gtk.Label(xalign=0, wrap=True)
+        self.title.add_css_class("panel-title")
+        inner.append(self.title)
+        row = Gtk.Box(spacing=8)
+        self.kind = Gtk.Label()
+        self.kind.add_css_class("badge")
+        self.kind.set_margin_start(0)
+        self.meta = Gtk.Label(xalign=0)
+        self.meta.add_css_class("meta")
+        row.append(self.kind)
+        row.append(self.meta)
+        inner.append(row)
+        self.tags = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=6, row_spacing=6,
+                                max_children_per_line=6)
+        inner.append(self.tags)
+        self.desc = Gtk.Label(xalign=0, wrap=True, lines=6, ellipsize=3, selectable=True)
+        self.desc.add_css_class("desc")
+        inner.append(self.desc)
+
+        self.apply = Gtk.Button()
+        self.apply.add_css_class("apply")
+        self.apply.connect("clicked", lambda b: self.win.activate_item(self.item, b))
+        inner.append(self.apply)
+        btns = Gtk.Box(spacing=8, homogeneous=True)
+        self.workshop = Gtk.Button(label="Página no Workshop")
+        self.workshop.add_css_class("ghost")
+        self.workshop.connect("clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(
+            f"steam://url/CommunityFilePage/{self.item['id']}", None))
+        folder = Gtk.Button(label="Abrir pasta")
+        folder.add_css_class("ghost")
+        folder.connect("clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(
+            Gio.File.new_for_path(self.item["dir"]).get_uri(), None))
+        btns.append(self.workshop)
+        btns.append(folder)
+        inner.append(btns)
+
+        sec = Gtk.Label(label="HANABI", xalign=0, margin_top=14)
+        sec.add_css_class("section")
+        inner.append(sec)
+        group = Adw.PreferencesGroup()
+        s = win.settings
+        mute = Adw.SwitchRow(title="Sem som")
+        s.bind("mute", mute, "active", Gio.SettingsBindFlags.DEFAULT)
+        group.add(mute)
+        vol = Adw.SpinRow.new_with_range(0, 100, 5)
+        vol.set_title("Volume")
+        s.bind("volume", vol, "value", Gio.SettingsBindFlags.DEFAULT)
+        group.add(vol)
+        fit = Adw.ComboRow(title="Ajuste na tela", model=Gtk.StringList.new(FITS))
+        fit.set_selected(s.get_int("content-fit"))
+        fit.connect("notify::selected", lambda r, _p: s.set_int("content-fit", r.get_selected()))
+        group.add(fit)
+        inner.append(group)
+
+    def show_item(self, item):
+        self.item = item
+        self.preview.show(item, animate=True)
+        self.title.set_label(item["title"])
+        self.kind.set_label(KIND_LABEL[item["kind"]])
+        for k in KIND_LABEL:
+            self.kind.remove_css_class(k)
+        self.kind.add_css_class(item["kind"])
+        self.meta.set_label(f"{item['source']}" + (f"  ·  ID {item['id']}" if item["id"] else ""))
+        self.tags.remove_all()
+        for t in item["tags"]:
+            lbl = Gtk.Label(label=t)
+            lbl.add_css_class("tag")
+            self.tags.append(lbl)
+        self.desc.set_label(item["desc"] or "Sem descrição.")
+        self.desc.set_visible(True)
+        self.apply.set_label("APLICAR NO FUNDO" if item["kind"] == "video" else "PREVIEW AO VIVO")
+        self.workshop.set_sensitive(bool(item["id"]))
+
+
+class Picker(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Hanabi Wallpapers", default_width=1180, default_height=860)
+        self.add_css_class("picker")
+        self.settings = Gio.Settings.new(SCHEMA)
+        self.cards = []
+        self.selected = None
+        self.query, self.kind = "", "all"
+        self.preview_proc = None
+        acc = Adw.StyleManager.get_default().get_accent_color_rgba()
+        self.accent = (acc.red, acc.green, acc.blue)
+
+        root = Gtk.Overlay()
+        self.backdrop = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=1100)
+        root.set_child(self.backdrop)
+        veil = Gtk.Box()
+        veil.add_css_class("veil")
+        root.add_overlay(veil)
+        self.embers = Particles(ambient=True)
+        self.embers.accent = self.accent
+        root.add_overlay(self.embers)
+
+        items = load_wallpapers()
+        counts = collections.Counter(i["kind"] for i in items)
+        header = Adw.HeaderBar(show_title=False)
+        header.add_css_class("top")
+        brand = Gtk.Label(label="WALLPAPERS")
+        brand.add_css_class("brand")
+        header.pack_start(brand)
+        tabs = Gtk.Box()
+        group = None
+        for key, label in [("all", f"INSTALADOS  {len(items)}")] + [
+                (k, f"{KIND_LABEL[k]}  {counts[k]}") for k in KIND_LABEL]:
+            b = Gtk.ToggleButton(label=label, active=key == "all", group=group)
+            group = group or b
+            b.add_css_class("tab")
+            b.connect("toggled", self.on_tab, key)
+            tabs.append(b)
+        header.pack_start(tabs)
+        search = Gtk.SearchEntry(placeholder_text="Buscar…", width_request=200, valign=Gtk.Align.CENTER)
+        search.add_css_class("search")
+        search.connect("search-changed", self.on_search)
+        header.pack_end(search)
+
+        self.flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
+                                column_spacing=12, row_spacing=12, max_children_per_line=20,
+                                margin_start=16, margin_end=16, margin_bottom=20, margin_top=14,
+                                valign=Gtk.Align.START)
+        self.flow.set_filter_func(self.filter)
+        grid = Gtk.ScrolledWindow(hexpand=True, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                  child=self.flow)
+        self.panel = Panel(self)
+        body = Gtk.Box()
+        body.append(grid)
+        body.append(self.panel)
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        content.append(header)
+        content.append(body)
+        self.toasts = Adw.ToastOverlay(child=content)
+        root.add_overlay(self.toasts)
+        self.fx = Particles(ambient=False)
+        root.add_overlay(self.fx)
+        self.set_content(root)
+
+        current = os.path.realpath(self.settings.get_string("video-path") or "/")
+        active = None
+        for item in items:
+            card = Card(item)
+            click = Gtk.GestureClick()
+            click.connect("released", self.on_click, card)
+            card.add_controller(click)
+            self.cards.append(card)
+            self.flow.append(card)
+            if not active and item["video"] and os.path.realpath(item["video"]) == current:
+                active = card
+        self.mark_active(active)
+        self.select(active or self.cards[0])
+        self.connect("close-request", lambda *_: self.kill_preview())
+        GLib.idle_add(self.intro)
+
+    def intro(self):
+        """Entrada em cascata dos cards visíveis."""
+        visible = [c for c in self.cards if self.filter(c.get_parent())]
+        for c in self.cards:
+            c.intro = 0.0
+            c.queue_draw()
+        for i, c in enumerate(visible):
+            GLib.timeout_add(min(i * 18, 1200), self._intro_card, c)
+        return GLib.SOURCE_REMOVE
+
+    def _intro_card(self, c):
+        c.load_thumb()
+        target = Adw.CallbackAnimationTarget.new(lambda v: (setattr(c, "intro", v), c.queue_draw()))
+        anim = Adw.TimedAnimation.new(c, 0.0, 1.0, 600, target)
+        anim.set_easing(Adw.Easing.EASE_OUT_BACK)
+        anim.play()
+        return GLib.SOURCE_REMOVE
+
+    def filter(self, child):
+        item = child.get_child().item
+        return self.kind in ("all", item["kind"]) and self.query in item["title"].lower()
+
+    def on_search(self, entry):
+        self.query = entry.get_text().lower()
+        self.flow.invalidate_filter()
+
+    def on_tab(self, button, key):
+        if button.get_active():
+            self.kind = key
+            self.flow.invalidate_filter()
+            self.intro()
+
+    def set_backdrop(self, item):
+        pic = AnimPic()
+        pic.add_css_class("backdrop")
+        pic.show(item, animate=bool(item["video"]))
+        old = self.backdrop.get_visible_child()
+        self.backdrop.add_child(pic)
+        self.backdrop.set_visible_child(pic)
+        if old:
+            GLib.timeout_add(1300, lambda: (old.show({"preview": None, "video": None}),
+                                            self.backdrop.remove(old), GLib.SOURCE_REMOVE)[-1])
+
+    def mark_active(self, card):
+        for c in self.cards:
+            c.set_flag("active", c is card)
+        if card:
+            self.set_backdrop(card.item)
+
+    def select(self, card):
+        if self.selected:
+            self.selected.set_flag("selected", False)
+        self.selected = card
+        card.set_flag("selected", True)
+        self.panel.show_item(card.item)
+
+    def burst_at(self, widget, x, y, item):
+        ok, pt = widget.compute_point(self.fx, Graphene.Point().init(x, y))
+        if ok:
+            self.fx.burst(pt.x, pt.y, self.accent if item["kind"] == "video" else KIND_COLOR[item["kind"]])
+
+    def on_click(self, _g, n_press, x, y, card):
+        self.burst_at(card, x, y, card.item)
+        self.select(card)
+        if card.item["kind"] == "video" or n_press >= 2:  # como no Wallpaper Engine: clicar já aplica
+            self.activate_item(card.item, None)
+
+    def activate_item(self, item, button):
+        if button:
+            self.burst_at(button, button.get_width() / 2, button.get_height() / 2, item)
+        if item["kind"] == "video":
+            self.settings.set_string("video-path", item["video"])
+            self.mark_active(next(c for c in self.cards if c.item is item))
+            self.toasts.add_toast(Adw.Toast(title=f"Aplicado: {item['title']}", timeout=2))
+        else:
+            self.open_preview(item)
+
+    def kill_preview(self):
+        if self.preview_proc and self.preview_proc.poll() is None:
+            self.preview_proc.terminate()
+        self.preview_proc = None
+        return False
+
+    def open_preview(self, item):
+        self.kill_preview()
+        try:
+            self.preview_proc = subprocess.Popen(
+                ["linux-wallpaperengine", "--silent", "--window", "120x80x1280x720", item["dir"]],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            msg = f"Preview ao vivo: {item['title']}  (o GNOME só deixa vídeo no fundo)"
+        except OSError as e:
+            msg = f"Não consegui abrir o preview: {e}"
+        self.toasts.add_toast(Adw.Toast(title=msg, timeout=3))
+
+
+def main():
+    if "--list" in sys.argv:
+        items = load_wallpapers()
+        assert items and all(i["kind"] in KIND_LABEL for i in items)
+        assert all(os.path.isfile(i["video"]) for i in items if i["kind"] == "video")
+        print(collections.Counter(i["kind"] for i in items), "sem preview:", sum(not i["preview"] for i in items))
+        return 0
+    app = Adw.Application(application_id="io.github.topdarkflames.HanabiWallpapers")
+
+    def activate(a):
+        css = Gtk.CssProvider()
+        css.load_from_string(CSS)
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
+        (a.get_active_window() or Picker(a)).present()
+
+    app.connect("activate", activate)
+    return app.run([])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,19 @@
+--- a/window-list@gnome-shell-extensions.gcampax.github.com/extension.js
++++ b/window-list@gnome-shell-extensions.gcampax.github.com/extension.js
+@@ -583,7 +583,7 @@
+     _isWindowVisible(window) {
+         const workspace = global.workspace_manager.get_active_workspace();
+ 
+-        return !window.skip_taskbar &&
++        return !window.skip_taskbar && !window.title?.includes("HanabiRenderer") &&
+                (this._ignoreWorkspace || window.located_on_workspace(workspace)) &&
+                (!this._perMonitor || window.get_monitor() === this._monitorIndex);
+     }
+@@ -623,6 +623,7 @@
+         this._unmanaging = false;
+         metaWindow.connectObject(
+             'notify::skip-taskbar', () => this._updateVisibility(),
++            'notify::title', () => this._updateVisibility(),
+             'workspace-changed', () => this._updateVisibility(),
+             'unmanaging', () => (this._unmanaging = true),
+             this);

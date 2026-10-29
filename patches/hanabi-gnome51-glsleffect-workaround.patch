@@ -1,0 +1,59 @@
+--- a/hanabi-extension@jeffshee.github.io/extension.js
++++ b/hanabi-extension@jeffshee.github.io/extension.js
+@@ -161,7 +161,7 @@
+   );
+   return [Math.trunc(x1 - box.x1), Math.trunc(y1 - box.y1)];
+ }
+-var RoundedCornersEffect = GObject.registerClass(
++var RoundedCornersEffect = Shell.GLSLEffect && GObject.registerClass(
+   class RoundedCornersEffect2 extends Shell.GLSLEffect {
+     // Pending debounced log timers, keyed by label.
+     logTimeouts = /* @__PURE__ */ new Map();
+@@ -358,8 +358,10 @@
+       this.monitorHeight = height;
+       backgroundActor.layout_manager = new Clutter2.BinLayout();
+       backgroundActor.add_child(this);
+-      this.roundedCornersEffect = new RoundedCornersEffect();
+-      this.backgroundActor.add_effect(this.roundedCornersEffect);
++      if (RoundedCornersEffect) {
++        this.roundedCornersEffect = new RoundedCornersEffect();
++        this.backgroundActor.add_effect(this.roundedCornersEffect);
++      }
+       this.setRoundedClipRadius(0);
+       this.setBorderStroke(this.settings.get_int("border-stroke"));
+       this.setBorderColor([1, 0, 0, 1]);
+@@ -383,29 +385,29 @@
+         return;
+       const workArea = Main.layoutManager.getWorkAreaForMonitor(this.monitorIndex);
+       const panelOffset = (workArea.y - monitor.y) / monitor.height * this.backgroundActor.height;
+-      this.roundedCornersEffect.setBounds(
++      this.roundedCornersEffect?.setBounds(
+         [0, panelOffset, this.width, this.height]
+       );
+     }
+     setRoundedClipRadius(radius) {
+       if (this.isDisposed)
+         return;
+-      this.roundedCornersEffect.setClipRadius(radius);
++      this.roundedCornersEffect?.setClipRadius(radius);
+     }
+     setRoundedClipBounds(x1, y1, x2, y2) {
+       if (this.isDisposed)
+         return;
+-      this.roundedCornersEffect.setBounds([x1, y1, x2, y2]);
++      this.roundedCornersEffect?.setBounds([x1, y1, x2, y2]);
+     }
+     setBorderStroke(stroke) {
+       if (this.isDisposed)
+         return;
+-      this.roundedCornersEffect.setBorderStroke(stroke);
++      this.roundedCornersEffect?.setBorderStroke(stroke);
+     }
+     setBorderColor(color) {
+       if (this.isDisposed)
+         return;
+-      this.roundedCornersEffect.setBorderColor(color);
++      this.roundedCornersEffect?.setBorderColor(color);
+     }
+     applyWallpaper() {
+       if (this.isDisposed)
