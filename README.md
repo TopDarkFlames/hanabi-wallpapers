@@ -4,7 +4,9 @@ A Wallpaper Engine–style library browser for GNOME. It reads every wallpaper y
 
 > 🇧🇷 [Versão em português abaixo](#português)
 
-<!-- screenshots: add images to docs/ and link them here -->
+![Hanabi Wallpapers](docs/screenshot.png)
+
+<p align="center"><img src="docs/demo.gif" alt="Hover tilt, live preview and click burst" width="620"></p>
 
 ## Features
 

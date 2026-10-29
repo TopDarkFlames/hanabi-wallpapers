@@ -370,9 +370,11 @@ class Card(Gtk.Widget):
         self.add_controller(motion)
         self.set_cursor(Gdk.Cursor.new_from_name("pointer"))
         self.set_tooltip_text(item["title"])
+        self.set_halign(Gtk.Align.CENTER)
 
     def do_measure(self, orientation, for_size):
-        return self.box.measure(orientation, for_size)
+        # tamanho fixo: o natural da Picture é o da imagem (480px+) e deixava um card por linha
+        return self.SIZE, self.SIZE, -1, -1
 
     def do_size_allocate(self, w, h, baseline):
         self.box.allocate(w, h, baseline, None)
