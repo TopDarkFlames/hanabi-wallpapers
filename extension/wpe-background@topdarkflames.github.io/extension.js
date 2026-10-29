@@ -23,6 +23,7 @@ import {Extension, InjectionManager} from 'resource:///org/gnome/shell/extension
 const CONFIG = GLib.build_filenamev([GLib.get_user_config_dir(), 'hanabi-wallpapers', 'background.json']);
 const LIBCEF = ['/opt/linux-wallpaperengine/libcef.so'];
 const STOP_GRACE_MS = 1500;
+const RETIRE_TIMEOUT_S = 30;  // a new wallpaper that never shows a window (crash) still replaces the old one
 
 function readConfig() {
     try {
@@ -46,6 +47,8 @@ function signalGroup(pid, signal) {
 export default class WpeBackground extends Extension {
     enable() {
         this._procs = [];          // {pid, monitor, window, actor, paused}
+        this._retiring = [];       // previous wallpaper, frozen until the new one is shown
+        this._retireId = 0;
         this._clones = new Set();
         this._signals = [];
         this._injections = new InjectionManager();
@@ -102,9 +105,25 @@ export default class WpeBackground extends Extension {
         if (JSON.stringify(cfg) === JSON.stringify(this._config) && this._procs.length)
             return;
         this._config = cfg;
-        this._stopAll();
+        // the old wallpaper stays on screen, frozen and silent, until the new one is shown: stopping it first
+        // flashed GNOME's default background for the seconds linux-wallpaperengine takes to load
+        this._stop(this._retiring, true);
+        const old = this._procs;
+        for (const proc of old)
+            signalGroup(proc.pid, 'STOP');
+        this._procs = [];
         if (cfg)
             this._startAll(cfg);
+        if (this._procs.length) {
+            this._retiring = old;
+            this._retireId = GLib.timeout_add_seconds(GLib.PRIORITY_DEFAULT, RETIRE_TIMEOUT_S, () => {
+                this._retireId = 0;
+                this._stop(this._retiring, true);
+                return GLib.SOURCE_REMOVE;
+            });
+        } else {
+            this._stop(old, true);
+        }
         this._refreshBackgrounds();
     }
 
@@ -120,10 +139,12 @@ export default class WpeBackground extends Extension {
         const cef = cfg.kind === 'web' ? LIBCEF.find(p => GLib.file_test(p, GLib.FileTest.EXISTS)) : null;
         const launcherEnv = cef ? GLib.environ_setenv(env, 'LD_PRELOAD', cef, true) : env;
 
+        // one process per monitor: only the primary one plays sound, or it plays twice, out of sync
+        const primary = global.display.get_primary_monitor();
         for (let i = 0; i < global.display.get_n_monitors(); i++) {
             const g = global.display.get_monitor_geometry(i);
             const argv = ['setsid', 'linux-wallpaperengine',
-                ...(volume > 0 ? ['--volume', `${volume}`] : ['--silent']),
+                ...(volume > 0 && i === primary ? ['--volume', `${volume}`] : ['--silent']),
                 '--fps', `${fps}`, '--window', `${g.x}x${g.y}x${g.width}x${g.height}`, '--scaling', 'fill',
                 ...props, cfg.dir];
             try {
@@ -145,10 +166,27 @@ export default class WpeBackground extends Extension {
     }
 
     _stopAll() {
-        for (const proc of this._procs) {
+        this._stop(this._retiring, true);
+        this._stop(this._procs, false);
+        this._procs = [];
+    }
+
+    // frozen=true: the group was SIGSTOPped (retired), so SIGTERM would never be handled; kill it outright
+    _stop(procs, frozen) {
+        if (procs === this._retiring) {
+            this._retiring = [];
+            if (this._retireId)
+                GLib.source_remove(this._retireId);
+            this._retireId = 0;
+        }
+        for (const proc of procs) {
             for (const clone of [...this._clones]) {
                 if (clone.source === proc.actor)
                     clone.destroy();
+            }
+            if (frozen) {
+                signalGroup(proc.pid, 'KILL');
+                continue;
             }
             if (proc.paused)
                 signalGroup(proc.pid, 'CONT');
@@ -159,7 +197,6 @@ export default class WpeBackground extends Extension {
                 return GLib.SOURCE_REMOVE;
             });
         }
-        this._procs = [];
     }
 
     _adopt(window) {
@@ -181,6 +218,8 @@ export default class WpeBackground extends Extension {
             window.disconnect(id);
             place();
             proc.actor = window.get_compositor_private();
+            if (this._procs.every(p => p.actor))  // the new wallpaper is up on every monitor
+                this._stop(this._retiring, true);
             this._refreshBackgrounds();
         });
         window.connect('unmanaged', () => {
