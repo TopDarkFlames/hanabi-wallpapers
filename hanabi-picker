@@ -5,7 +5,9 @@ Vídeos são aplicados no Hanabi; scene/web abrem um preview ao vivo no linux-wa
 porque o GNOME não deixa nada além do Hanabi desenhar no fundo.
 """
 import collections
+import concurrent.futures
 import glob
+import hashlib
 import json
 import math
 import os
@@ -155,6 +157,38 @@ def load_wallpapers():
     return sorted(items, key=lambda i: (i["kind"] != "video", i["title"].lower()))
 
 
+THUMBS = os.path.join(GLib.get_user_cache_dir(), "hanabi-wallpapers")
+THUMBER = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+
+def thumb_paths(item):
+    """(origem, miniatura em cache) para vídeos e GIFs, cujo 1º frame costuma ser preto (fade-in)."""
+    prev = item["preview"] or ""
+    src = item["video"] or (prev if prev.endswith((".gif", ".mp4")) else None)
+    if not src:
+        return None, None
+    key = hashlib.sha1(f"{src}:{os.path.getmtime(src)}".encode()).hexdigest()
+    return src, os.path.join(THUMBS, key + ".jpg")
+
+
+def make_thumb(src, dst):
+    """Extrai um frame de ~40% da duração com ffmpeg. Roda numa thread; devolve dst ou None."""
+    try:
+        dur = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src],
+                             capture_output=True, text=True, timeout=20).stdout.strip()
+        seek = float(dur) * 0.4 if dur not in ("", "N/A") else 0.0
+        os.makedirs(THUMBS, exist_ok=True)
+        tmp = dst + ".tmp.jpg"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{seek:.2f}", "-i", src, "-frames:v", "1",
+                        "-vf", "scale=480:-2", "-q:v", "4", tmp], capture_output=True, timeout=60)
+        if os.path.getsize(tmp) > 0:
+            os.replace(tmp, dst)
+            return dst
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return None
+
+
 class AnimPic(Gtk.Picture):
     """Picture que mostra a miniatura parada ou anima (vídeo pelo GStreamer, GIF pelo GdkPixbuf)."""
 
@@ -169,7 +203,9 @@ class AnimPic(Gtk.Picture):
             self.media.pause()
             self.media = None
         prev = item["preview"] or ""
-        if prev and not prev.endswith(".mp4"):
+        if item.get("thumb"):
+            self.set_filename(item["thumb"])
+        elif prev and not prev.endswith(".mp4"):
             self.set_filename(prev)
         else:
             self.set_paintable(None)
@@ -407,9 +443,23 @@ class Card(Gtk.Widget):
         self.animate()
 
     def load_thumb(self):
-        if not self.loaded:
-            self.loaded = True
-            self.pic.show(self.item)
+        if self.loaded:
+            return
+        self.loaded = True
+        src, dst = thumb_paths(self.item)
+        if src and os.path.isfile(dst):
+            self.item["thumb"] = dst
+        self.pic.show(self.item)
+        if src and "thumb" not in self.item:
+            THUMBER.submit(make_thumb, src, dst).add_done_callback(
+                lambda fut: GLib.idle_add(self._thumb_ready, fut.result()))
+
+    def _thumb_ready(self, thumb):
+        if thumb:
+            self.item["thumb"] = thumb
+            if self.hg == 0:  # não interrompe o preview animado do hover
+                self.pic.show(self.item)
+        return GLib.SOURCE_REMOVE
 
     def set_flag(self, flag, on):
         (self.box.add_css_class if on else self.box.remove_css_class)(flag)
@@ -532,22 +582,21 @@ class Picker(Adw.ApplicationWindow):
         self.embers.accent = self.accent
         root.add_overlay(self.embers)
 
-        items = load_wallpapers()
-        counts = collections.Counter(i["kind"] for i in items)
         header = Adw.HeaderBar(show_title=False)
         header.add_css_class("top")
         brand = Gtk.Label(label="WALLPAPERS")
         brand.add_css_class("brand")
         header.pack_start(brand)
         tabs = Gtk.Box()
+        self.tabs = {}
         group = None
-        for key, label in [("all", f"INSTALADOS  {len(items)}")] + [
-                (k, f"{KIND_LABEL[k]}  {counts[k]}") for k in KIND_LABEL]:
-            b = Gtk.ToggleButton(label=label, active=key == "all", group=group)
+        for key in ["all", *KIND_LABEL]:
+            b = Gtk.ToggleButton(active=key == "all", group=group)
             group = group or b
             b.add_css_class("tab")
             b.connect("toggled", self.on_tab, key)
             tabs.append(b)
+            self.tabs[key] = b
         header.pack_start(tabs)
         search = Gtk.SearchEntry(placeholder_text="Buscar…", width_request=200, valign=Gtk.Align.CENTER)
         search.add_css_class("search")
@@ -574,6 +623,21 @@ class Picker(Adw.ApplicationWindow):
         root.add_overlay(self.fx)
         self.set_content(root)
 
+        self.connect("close-request", lambda *_: self.kill_preview())
+        self.populate()
+        # Steam baixa inscrições novas (e apaga as canceladas) nessa pasta: recarrega sozinho
+        self.reload_id = 0
+        self.monitor = Gio.File.new_for_path(WORKSHOP).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
+        self.monitor.connect("changed", self.on_library_changed)
+
+    def populate(self):
+        items = load_wallpapers()
+        counts = collections.Counter(i["kind"] for i in items)
+        self.tabs["all"].set_label(f"INSTALADOS  {len(items)}")
+        for k in KIND_LABEL:
+            self.tabs[k].set_label(f"{KIND_LABEL[k]}  {counts[k]}")
+        self.flow.remove_all()
+        self.cards, self.selected = [], None
         current = os.path.realpath(self.settings.get_string("video-path") or "/")
         active = None
         for item in items:
@@ -586,9 +650,24 @@ class Picker(Adw.ApplicationWindow):
             if not active and item["video"] and os.path.realpath(item["video"]) == current:
                 active = card
         self.mark_active(active)
-        self.select(active or self.cards[0])
-        self.connect("close-request", lambda *_: self.kill_preview())
+        if self.cards:
+            self.select(active or self.cards[0])
         GLib.idle_add(self.intro)
+
+    def on_library_changed(self, *_):
+        if self.reload_id:
+            GLib.source_remove(self.reload_id)
+        self.reload_id = GLib.timeout_add_seconds(3, self._reload)  # espera o download terminar de mover
+
+    def _reload(self):
+        self.reload_id = 0
+        before = len(self.cards)
+        self.populate()
+        diff = len(self.cards) - before
+        if diff:
+            self.toasts.add_toast(Adw.Toast(
+                title=f"{abs(diff)} wallpaper(s) {'novo(s)' if diff > 0 else 'removido(s)'} da Steam", timeout=3))
+        return GLib.SOURCE_REMOVE
 
     def intro(self):
         """Entrada em cascata dos cards visíveis."""

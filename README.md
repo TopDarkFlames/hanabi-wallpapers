@@ -25,6 +25,7 @@ A Wallpaper Engine–style library browser for GNOME. It reads every wallpaper y
 - The [Hanabi](https://github.com/jeffshee/gnome-ext-hanabi) extension
 - Python 3, PyGObject, pycairo, GTK 4, libadwaita ≥ 1.6, and GStreamer (`gst-libav` for mp4)
 - Wallpaper Engine installed through Steam, in the default library folder `~/.steam/steam/steamapps`
+- `ffmpeg`, for thumbnails
 - Optional: `linux-wallpaperengine`, for the Scene/Web live preview
 
 ## Install
