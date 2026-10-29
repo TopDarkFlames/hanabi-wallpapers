@@ -1,0 +1,7 @@
+{
+  "uuid": "wpe-background@topdarkflames.github.io",
+  "name": "Wallpaper Engine Background",
+  "description": "Runs Wallpaper Engine scene and web wallpapers (through linux-wallpaperengine) as your live desktop background. Controlled by the Hanabi Wallpapers app.",
+  "shell-version": ["50", "51"],
+  "url": "https://github.com/TopDarkFlames/hanabi-wallpapers"
+}

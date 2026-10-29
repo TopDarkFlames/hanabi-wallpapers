@@ -1,6 +1,9 @@
 # Hanabi Wallpapers
 
-A Wallpaper Engine–style library browser for GNOME. It reads every wallpaper you have installed or subscribed to in **Wallpaper Engine (Steam)** and applies the video ones as your live desktop background through the **[Hanabi](https://github.com/jeffshee/gnome-ext-hanabi)** GNOME extension.
+A Wallpaper Engine–style library browser for GNOME. It reads every wallpaper you have installed or subscribed to in **Wallpaper Engine (Steam)** and sets it as your live desktop background:
+
+- **video** wallpapers through the **[Hanabi](https://github.com/jeffshee/gnome-ext-hanabi)** extension;
+- **scene** and **web** wallpapers through **Wallpaper Engine Background**, a GNOME Shell extension included in this repo that runs [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine) behind your windows.
 
 > 🇧🇷 [Versão em português abaixo](#português)
 
@@ -11,8 +14,8 @@ A Wallpaper Engine–style library browser for GNOME. It reads every wallpaper y
 ## Features
 
 - **Your whole library:** Workshop subscriptions, Wallpaper Engine's built-in wallpapers, your own projects, and presets (resolved to the wallpaper they depend on). Tabs filter by type (Video / Scene / Web), and there is a search box.
-- **Click to apply:** clicking a video wallpaper sets it as Hanabi's background right away.
-- **Live preview:** Scene and Web wallpapers can't be a background on GNOME (see below), so double-clicking them opens a live preview window through [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine). Presets open with their own colors and settings, and the app tells you when linux-wallpaperengine can't open a wallpaper.
+- **Click to apply:** clicking any wallpaper sets it as your background right away. Videos go to Hanabi; scene and web wallpapers go to the Wallpaper Engine Background extension, and Hanabi is paused while one is active.
+- **Preview window:** scene and web wallpapers can also be opened in a normal window first. Presets open with their own colors and settings, and the app tells you when linux-wallpaperengine can't open a wallpaper.
 - **Details panel:** an animated preview, tags, description, a link to the Workshop page, and Hanabi's mute, volume and screen-fit settings.
 - **Effects:**
   - 3D card tilt that follows the mouse, with a light glare.
@@ -44,11 +47,20 @@ Then open **Hanabi Wallpapers** from your app menu, or run `~/.local/bin/hanabi-
 
 - **Web wallpapers in linux-wallpaperengine** crash at startup with `close symbol missing` ([Almamu/linux-wallpaperengine#628](https://github.com/Almamu/linux-wallpaperengine/issues/628)). The app applies the workaround from that issue automatically: it preloads `libcef.so`.
 - **Some Scene wallpapers** don't open in linux-wallpaperengine, or open with parts missing, such as unsupported puppet models. That is a limitation of linux-wallpaperengine; the app shows a message when the preview fails.
-- The preview window is a normal window, not the desktop background.
+- **Web wallpapers are experimental.** On my machine, linux-wallpaperengine's embedded browser starts but sometimes doesn't draw anything.
+- The background extension was tested on GNOME 51 (Wayland). It declares GNOME 50 too, but I haven't tested it there.
 
-## Why only video wallpapers become the background
+## How scene/web wallpapers become the background on GNOME
 
-GNOME's compositor (Mutter) doesn't implement `wlr-layer-shell`, so `linux-wallpaperengine` can't place itself behind your windows on GNOME. Hanabi works around this from inside GNOME Shell, but it only plays video. Scene and Web wallpapers stay preview-only on GNOME. On KDE or wlroots compositors (Hyprland, Sway, …) you can use linux-wallpaperengine directly.
+GNOME's compositor (Mutter) doesn't implement `wlr-layer-shell`, so `linux-wallpaperengine` can't place itself behind your windows on GNOME. The **Wallpaper Engine Background** extension (`extension/`) works around this from inside GNOME Shell:
+
+- It starts linux-wallpaperengine in window mode, one process per monitor, sized to that monitor.
+- It turns each of those windows into a **DESKTOP-type window**. That puts it on the bottom layer and on every workspace, and hides it from the taskbar, Alt+Tab and the overview.
+- The real window stays under the pointer, so wallpapers **still react to the mouse** over the empty desktop. Audio-reactive and clock wallpapers keep working too.
+- It injects a clone of the wallpaper into the overview and lock-screen backgrounds, the same technique Hanabi uses.
+- It **pauses** the wallpaper (SIGSTOP) while a window is fullscreen on that monitor, for example a game or a video. linux-wallpaperengine can't detect that on GNOME by itself.
+
+The app drives it through `~/.config/hanabi-wallpapers/background.json`, and the extension reloads when that file changes. `install.sh` installs and enables the extension. Log out and back in once afterwards, because Wayland only loads new extensions at login.
 
 ## Getting Hanabi running on GNOME 51 (`patches/`)
 
@@ -85,8 +97,8 @@ Log out and back in afterwards, because GNOME Shell only reloads extension code 
 
 ## Credits
 
-- [Hanabi](https://github.com/jeffshee/gnome-ext-hanabi) by Jeff Shee: this app only changes Hanabi's settings and contains none of its code.
-- [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine) by Almamu, used for live previews.
+- [Hanabi](https://github.com/jeffshee/gnome-ext-hanabi) by Jeff Shee: the app only changes Hanabi's settings. The background extension reuses Hanabi's idea of cloning a window into the overview background, but none of its code.
+- [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine) by Almamu, which renders the scene and web wallpapers.
 - Wallpaper Engine and all Workshop content belong to their respective authors. This project ships no wallpapers.
 - Built with help from Claude (Anthropic).
 
@@ -98,11 +110,14 @@ GPL-3.0-or-later, the same license as Hanabi.
 
 ## Português
 
-Um navegador de wallpapers no estilo do Wallpaper Engine para o GNOME. Ele lê todos os wallpapers que você tem instalados ou inscritos no **Wallpaper Engine (Steam)** e aplica os de vídeo como fundo animado usando a extensão **[Hanabi](https://github.com/jeffshee/gnome-ext-hanabi)**.
+Um navegador de wallpapers no estilo do Wallpaper Engine para o GNOME. Ele lê todos os wallpapers que você tem instalados ou inscritos no **Wallpaper Engine (Steam)** e aplica qualquer um deles como fundo animado:
+
+- **vídeo**, pela extensão **[Hanabi](https://github.com/jeffshee/gnome-ext-hanabi)**;
+- **scene e web**, pela extensão **Wallpaper Engine Background**, que vem neste repositório e roda o `linux-wallpaperengine` atrás das janelas.
 
 - **Biblioteca inteira:** inscrições do Workshop, wallpapers que já vêm com o Wallpaper Engine, seus próprios projetos e presets. Abas filtram por tipo (Vídeo / Scene / Web), e tem uma busca.
-- **Clique para aplicar:** clicar num wallpaper de vídeo já aplica ele no fundo pelo Hanabi.
-- **Preview ao vivo:** wallpapers Scene e Web não podem ir pro fundo no GNOME, porque o Mutter não tem `wlr-layer-shell`. Por isso eles abrem numa janela de preview ao vivo pelo `linux-wallpaperengine`.
+- **Clique para aplicar:** clicar em qualquer wallpaper já aplica ele no fundo. Os de vídeo vão pro Hanabi, e os scene e web vão pra extensão Wallpaper Engine Background. Enquanto um scene ou web está ativo, o Hanabi fica desligado.
+- **Scene e web no fundo:** o GNOME não tem `wlr-layer-shell`, então a extensão abre o `linux-wallpaperengine` numa janela por monitor e transforma essa janela numa janela do tipo DESKTOP. Ela fica atrás de tudo, em todas as áreas de trabalho e fora da barra e do Alt+Tab. O wallpaper continua reagindo ao mouse e ao áudio, aparece na visão geral e pausa quando algum programa está em tela cheia.
 - **Painel de detalhes:** preview animado, tags, descrição, link pra página do Workshop, e os controles do Hanabi: mudo, volume e ajuste na tela.
 - **Efeitos:**
   - Cards que inclinam em 3D seguindo o mouse, com reflexo de luz.
@@ -111,7 +126,7 @@ Um navegador de wallpapers no estilo do Wallpaper Engine para o GNOME. Ele lê t
   - Onda de choque e faíscas ao clicar.
   - Cards que entram em cascata, e borda que pulsa no wallpaper ativo.
 
-**Instalar:** `git clone` este repositório e rode `./install.sh`. Depois abra **Hanabi Wallpapers** no menu de aplicativos.
+**Instalar:** `git clone` este repositório e rode `./install.sh`. Depois saia e entre de novo na sessão, para o GNOME carregar a extensão, e abra **Hanabi Wallpapers** no menu de aplicativos.
 
 **Hanabi no GNOME 51:** a pasta `patches/` tem o que precisei pra fazer o Hanabi funcionar no GNOME 51:
 - o PKGBUILD do AUR consertado;

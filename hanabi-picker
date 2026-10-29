@@ -33,6 +33,9 @@ STEAM = os.path.expanduser("~/.steam/steam/steamapps")
 WORKSHOP = os.path.join(STEAM, "workshop/content/431960")
 PROJECTS = os.path.join(STEAM, "common/wallpaper_engine/projects")
 SCHEMA = "io.github.jeffshee.hanabi-extension"
+HANABI_EXT = "hanabi-extension@jeffshee.github.io"
+BG_EXT = "wpe-background@topdarkflames.github.io"  # extensão deste repo: scene/web como fundo
+BG_CONFIG = os.path.join(GLib.get_user_config_dir(), "hanabi-wallpapers", "background.json")
 KIND_LABEL = {"video": "VÍDEO", "scene": "SCENE", "web": "WEB"}
 KIND_COLOR = {"video": (0.18, 0.90, 0.65), "scene": (0.66, 0.44, 1.0), "web": (1.0, 0.71, 0.28)}
 FITS = ["Esticar", "Mostrar inteiro", "Preencher (cortar)", "Só reduzir"]  # ordem do GtkContentFit
@@ -73,7 +76,6 @@ flowboxchild { padding: 0; background: none; outline: none; }
 }
 .title-bar { background: linear-gradient(180deg, transparent, alpha(black,0.92)); padding: 22px 8px 6px 8px; }
 .card-title { color: white; font-size: 11px; font-weight: 700; text-shadow: 0 1px 3px black; }
-.card-hint { color: alpha(white,0.7); font-size: 9px; font-weight: 800; letter-spacing: 1px; }
 .badge { border-radius: 3px; padding: 1px 6px; font-size: 9px; font-weight: 900; margin: 6px; letter-spacing: 1px; }
 .badge.active { background: @accent_bg_color; color: @accent_fg_color; }
 .badge.video { background: alpha(#2ee6a6,0.92); color: #04150f; }
@@ -191,6 +193,42 @@ def libcef_preload():
     if exe:
         candidates.insert(0, os.path.join(os.path.dirname(os.path.realpath(exe)), "libcef.so"))
     return next((c for c in candidates if os.path.isfile(c)), None)
+
+
+def read_bg_config():
+    """Wallpaper scene/web ativo na extensão Wallpaper Engine Background, ou None."""
+    try:
+        with open(BG_CONFIG, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return cfg if isinstance(cfg, dict) and isinstance(cfg.get("dir"), str) and cfg["dir"] else None
+
+
+def write_bg_config(cfg):
+    """Grava atomicamente (a extensão vigia o arquivo); None desliga o fundo scene/web."""
+    os.makedirs(os.path.dirname(BG_CONFIG), exist_ok=True)
+    tmp = BG_CONFIG + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg or {}, f, ensure_ascii=False)
+    os.replace(tmp, BG_CONFIG)
+
+
+def extension_state(uuid):
+    """Estado da extensão no GNOME Shell ('ACTIVE', 'ERROR', ...) ou None se não estiver instalada."""
+    try:
+        out = subprocess.run(["gnome-extensions", "info", uuid], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"State:\s*(\S+)", out)
+    return m.group(1) if m else None
+
+
+def set_extension(uuid, enabled):
+    try:
+        subprocess.run(["gnome-extensions", "enable" if enabled else "disable", uuid], capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 THUMBS = os.path.join(GLib.get_user_cache_dir(), "hanabi-wallpapers")
@@ -460,10 +498,6 @@ class Card(Gtk.Widget):
         title = Gtk.Label(label=item["title"], xalign=0, ellipsize=3)
         title.add_css_class("card-title")
         bar.append(title)
-        if item["kind"] != "video":
-            hint = Gtk.Label(label="2 CLIQUES: PREVIEW", xalign=0)
-            hint.add_css_class("card-hint")
-            bar.append(hint)
         self.bar = Gtk.Revealer(child=bar, transition_type=Gtk.RevealerTransitionType.SLIDE_UP,
                                 transition_duration=220, valign=Gtk.Align.END)
         self.bar.add_css_class("title-bar")
@@ -484,8 +518,7 @@ class Card(Gtk.Widget):
         motion.connect("leave", self.on_leave)
         self.add_controller(motion)
         self.set_cursor(Gdk.Cursor.new_from_name("pointer"))
-        self.set_tooltip_text(item["title"] if item["kind"] == "video" else
-                              f"{item['title']}\nO GNOME só aceita vídeo no fundo: clique duplo abre o preview ao vivo")
+        self.set_tooltip_text(item["title"])
         self.set_halign(Gtk.Align.CENTER)
 
     def do_measure(self, orientation, for_size):
@@ -667,11 +700,13 @@ class Panel(Gtk.Box):
         self.apply.add_css_class("apply")
         self.apply.connect("clicked", lambda b: self.item and self.win.activate_item(self.item, b))
         self.details.append(self.apply)
-        self.note = Gtk.Label(xalign=0, wrap=True,
-                              label="O GNOME só aceita vídeo no fundo. Scene e Web abrem num preview ao vivo "
-                                    "(linux-wallpaperengine); alguns efeitos podem não funcionar nele.")
+        self.note = Gtk.Label(xalign=0, wrap=True)
         self.note.add_css_class("note")
         self.details.append(self.note)
+        self.preview_btn = Gtk.Button(label="Preview em janela")
+        self.preview_btn.add_css_class("ghost")
+        self.preview_btn.connect("clicked", lambda *_: self.item and self.win.open_preview(self.item))
+        self.details.append(self.preview_btn)
         btns = Gtk.Box(spacing=8, homogeneous=True)
         self.workshop = Gtk.Button(label="Página no Workshop")
         self.workshop.add_css_class("ghost")
@@ -685,7 +720,7 @@ class Panel(Gtk.Box):
         btns.append(folder)
         self.details.append(btns)
 
-        sec = Gtk.Label(label="HANABI", xalign=0, margin_top=14)
+        sec = Gtk.Label(label="SOM E AJUSTE", xalign=0, margin_top=14)
         sec.add_css_class("section")
         inner.append(sec)
         group = Adw.PreferencesGroup()
@@ -722,6 +757,7 @@ class Panel(Gtk.Box):
             self.desc.set_label("")
             self.apply.set_label("APLICAR NO FUNDO")
             self.note.set_visible(False)
+            self.preview_btn.set_visible(False)
             return
         self.title.set_label(item["title"])
         self.kind.set_visible(True)
@@ -736,8 +772,12 @@ class Panel(Gtk.Box):
             lbl.add_css_class("tag")
             self.tags.append(lbl)
         self.desc.set_label(item["desc"] or "Sem descrição.")
-        self.apply.set_label("APLICAR NO FUNDO" if item["kind"] == "video" else "PREVIEW AO VIVO")
+        self.apply.set_label("APLICAR NO FUNDO")
+        self.note.set_label("Roda no fundo pela extensão Wallpaper Engine Background (linux-wallpaperengine). "
+                            "Alguns efeitos podem não funcionar." + (" Wallpapers Web são experimentais."
+                                                                     if item["kind"] == "web" else ""))
         self.note.set_visible(item["kind"] != "video")
+        self.preview_btn.set_visible(item["kind"] != "video")
         self.workshop.set_sensitive(bool(item["id"]))
 
 
@@ -812,6 +852,8 @@ class Picker(Adw.ApplicationWindow):
 
         self.connect("close-request", lambda *_: self.kill_preview())
         self.connect("notify::is-active", lambda w, _p: self.panel.preview.set_playing(w.is_active()))
+        for key in ("mute", "volume"):
+            self.settings.connect(f"changed::{key}", self.on_volume_changed)
         self.populate()
         # Steam baixa inscrições novas (e apaga as canceladas) nessas pastas: recarrega sozinho
         self.reload_id = 0
@@ -834,6 +876,7 @@ class Picker(Adw.ApplicationWindow):
         self.flow.remove_all()
         self.cards, self.selected = [], None
         current = os.path.realpath(self.settings.get_string("video-path") or "/")
+        bg = read_bg_config()
         active = keep = None
         for item in items:
             card = Card(item)
@@ -842,7 +885,12 @@ class Picker(Adw.ApplicationWindow):
             card.add_controller(click)
             self.cards.append(card)
             self.flow.append(card)
-            if not active and item["video"] and os.path.realpath(item["video"]) == current:
+            if active:
+                pass
+            elif bg:
+                if item["dir"] == bg["dir"] and item["preset"] == bg.get("preset", {}):
+                    active = card
+            elif item["video"] and os.path.realpath(item["video"]) == current:
                 active = card
             if prev_sel and item_key(item) == prev_sel:
                 keep = card
@@ -941,25 +989,50 @@ class Picker(Adw.ApplicationWindow):
         if ok:
             self.fx.burst(pt.x, pt.y, self.accent if item["kind"] == "video" else KIND_COLOR[item["kind"]])
 
-    def on_click(self, _g, n_press, x, y, card):
+    def on_click(self, _g, _n, x, y, card):
         self.burst_at(card, x, y, card.item)
         self.select(card)
-        if card.item["kind"] == "video" or n_press >= 2:  # como no Wallpaper Engine: clicar já aplica
-            self.activate_item(card.item, None)
+        self.activate_item(card.item, None)  # como no Wallpaper Engine: clicar já aplica
+
+    def bg_volume(self):
+        return 0 if self.settings.get_boolean("mute") else self.settings.get_int("volume")
+
+    def on_volume_changed(self, *_):
+        cfg = read_bg_config()
+        if cfg and cfg.get("volume") != self.bg_volume():
+            write_bg_config({**cfg, "volume": self.bg_volume()})  # a extensão reinicia o wallpaper com o som novo
 
     def activate_item(self, item, button):
         if button:
             self.burst_at(button, button.get_width() / 2, button.get_height() / 2, item)
+        card = next((c for c in self.cards if item_key(c.item) == item_key(item)), None)
+        if not card or not os.path.isdir(item["dir"]) or (item["video"] and not os.path.isfile(item["video"])):
+            self.toasts.add_toast(Adw.Toast(title="Esse wallpaper não está mais instalado", timeout=3))
+            return
         if item["kind"] == "video":
-            card = next((c for c in self.cards if item_key(c.item) == item_key(item)), None)
-            if not card or not os.path.isfile(item["video"]):
-                self.toasts.add_toast(Adw.Toast(title="Esse wallpaper não está mais instalado", timeout=3))
-                return
+            # vídeo vai pelo Hanabi: desliga o fundo scene/web e religa o Hanabi
+            if read_bg_config():
+                write_bg_config(None)
+            if extension_state(HANABI_EXT) not in ("ACTIVE", None):
+                set_extension(HANABI_EXT, True)
             self.settings.set_string("video-path", item["video"])
-            self.mark_active(card)
-            self.toasts.add_toast(Adw.Toast(title=f"Aplicado: {item['title']}", timeout=2))
+            msg = f"Aplicado: {item['title']}"
         else:
-            self.open_preview(item)
+            state = extension_state(BG_EXT)
+            if state is None:
+                self.toasts.add_toast(Adw.Toast(
+                    title="Falta a extensão Wallpaper Engine Background: rode o install.sh e saia e entre na sessão",
+                    timeout=5))
+                return
+            write_bg_config({"dir": item["dir"], "kind": item["kind"], "preset": item["preset"],
+                             "title": item["title"], "volume": self.bg_volume(), "fps": 30})
+            set_extension(HANABI_EXT, False)  # o vídeo do Hanabi ficaria por baixo, gastando GPU à toa
+            if state != "ACTIVE":
+                set_extension(BG_EXT, True)
+            msg = (f"Aplicado: {item['title']}" if state == "ACTIVE" else
+                   "Extensão Wallpaper Engine Background ativada: saia e entre na sessão para o fundo aparecer")
+        self.mark_active(card)
+        self.toasts.add_toast(Adw.Toast(title=msg, timeout=3))
 
     def kill_preview(self):
         """Fecha o preview e os processos filhos (os wallpapers web abrem vários processos do navegador
