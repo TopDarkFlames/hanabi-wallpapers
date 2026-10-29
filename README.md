@@ -36,7 +36,7 @@ cd hanabi-wallpapers
 ./install.sh
 ```
 
-Then open **Hanabi Wallpapers** from your app menu, or run `hanabi-picker`. To check your library without opening a window, run `hanabi-picker --list`.
+Then open **Hanabi Wallpapers** from your app menu, or run `~/.local/bin/hanabi-picker` (just `hanabi-picker` if `~/.local/bin` is in your `PATH`). To check your library without opening a window, run `hanabi-picker --list`.
 
 ## Why only video wallpapers become the background
 
@@ -54,7 +54,18 @@ These are the fixes I needed on CachyOS / GNOME 51 (October 2026). They are work
 
 **Credit:** the proper GNOME 51 fix is [jeffshee/gnome-ext-hanabi#264](https://github.com/jeffshee/gnome-ext-hanabi/pull/264) by @SkySlider. It ports the effect to `Clutter.ShaderEffect` and keeps the rounded corners. Once it is merged, you won't need my GLSLEffect workaround. See also issue [#263](https://github.com/jeffshee/gnome-ext-hanabi/issues/263).
 
-Apply the extension patches as root. Back up the files first, because a package update will overwrite them:
+**PKGBUILD fix** (Arch / AUR):
+
+```sh
+paru -G gnome-shell-extension-hanabi-git   # or: git clone https://aur.archlinux.org/gnome-shell-extension-hanabi-git.git
+cd gnome-shell-extension-hanabi-git
+patch -p1 < /path/to/patches/aur-PKGBUILD-build-fix.patch
+makepkg -si
+```
+
+If the AUR package has changed since this patch was made (October 2026), the patch may not apply. In that case, make the same two edits by hand: add `npm` to `makedepends`, and run `npm ci && npm run build` inside `gnome-ext-hanabi` before `arch-meson`.
+
+**Extension patches:** they were made against Hanabi commit `c18dd76` and `gnome-shell-extensions` 51.0, so other versions may not apply. Apply them as root. Back up the files first, because a package update will overwrite them:
 
 ```sh
 cd /usr/share/gnome-shell/extensions
