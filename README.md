@@ -12,7 +12,7 @@ A Wallpaper Engine–style library browser for GNOME. It reads every wallpaper y
 
 - **Your whole library:** Workshop subscriptions, Wallpaper Engine's built-in wallpapers, your own projects, and presets (resolved to the wallpaper they depend on). Tabs filter by type (Video / Scene / Web), and there is a search box.
 - **Click to apply:** clicking a video wallpaper sets it as Hanabi's background right away.
-- **Live preview:** Scene and Web wallpapers can't be a background on GNOME (see below), so they open in a live preview window through [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine).
+- **Live preview:** Scene and Web wallpapers can't be a background on GNOME (see below), so double-clicking them opens a live preview window through [linux-wallpaperengine](https://github.com/Almamu/linux-wallpaperengine). Presets open with their own colors and settings, and the app tells you when linux-wallpaperengine can't open a wallpaper.
 - **Details panel:** an animated preview, tags, description, a link to the Workshop page, and Hanabi's mute, volume and screen-fit settings.
 - **Effects:**
   - 3D card tilt that follows the mouse, with a light glare.
@@ -25,7 +25,7 @@ A Wallpaper Engine–style library browser for GNOME. It reads every wallpaper y
 
 - GNOME (tested on GNOME 51, Wayland)
 - The [Hanabi](https://github.com/jeffshee/gnome-ext-hanabi) extension
-- Python 3, PyGObject, pycairo, GTK 4, libadwaita ≥ 1.6, and GStreamer (`gst-libav` for mp4)
+- Python 3, PyGObject, pycairo, GTK ≥ 4.12, libadwaita ≥ 1.6, and GStreamer (`gst-libav` for mp4)
 - Wallpaper Engine installed through Steam, in the default library folder `~/.steam/steam/steamapps`
 - `ffmpeg`, for thumbnails
 - Optional: `linux-wallpaperengine`, for the Scene/Web live preview
@@ -39,6 +39,12 @@ cd hanabi-wallpapers
 ```
 
 Then open **Hanabi Wallpapers** from your app menu, or run `~/.local/bin/hanabi-picker` (just `hanabi-picker` if `~/.local/bin` is in your `PATH`). To check your library without opening a window, run `hanabi-picker --list`.
+
+## Known limitations
+
+- **Web wallpapers in linux-wallpaperengine** crash at startup with `close symbol missing` ([Almamu/linux-wallpaperengine#628](https://github.com/Almamu/linux-wallpaperengine/issues/628)). The app applies the workaround from that issue automatically: it preloads `libcef.so`.
+- **Some Scene wallpapers** don't open in linux-wallpaperengine, or open with parts missing, such as unsupported puppet models. That is a limitation of linux-wallpaperengine; the app shows a message when the preview fails.
+- The preview window is a normal window, not the desktop background.
 
 ## Why only video wallpapers become the background
 

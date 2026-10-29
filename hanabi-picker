@@ -13,8 +13,11 @@ import math
 import os
 import random
 import re
+import shutil
+import signal
 import subprocess
 import sys
+import tempfile
 
 import cairo
 import gi
@@ -25,6 +28,7 @@ gi.require_version("GdkPixbuf", "2.0")
 gi.require_version("Graphene", "1.0")
 from gi.repository import Adw, Gdk, GdkPixbuf, Gio, GLib, Graphene, Gtk  # noqa: E402
 
+APP_ID = "io.github.topdarkflames.HanabiWallpapers"
 STEAM = os.path.expanduser("~/.steam/steam/steamapps")
 WORKSHOP = os.path.join(STEAM, "workshop/content/431960")
 PROJECTS = os.path.join(STEAM, "common/wallpaper_engine/projects")
@@ -32,20 +36,20 @@ SCHEMA = "io.github.jeffshee.hanabi-extension"
 KIND_LABEL = {"video": "VÍDEO", "scene": "SCENE", "web": "WEB"}
 KIND_COLOR = {"video": (0.18, 0.90, 0.65), "scene": (0.66, 0.44, 1.0), "web": (1.0, 0.71, 0.28)}
 FITS = ["Esticar", "Mostrar inteiro", "Preencher (cortar)", "Só reduzir"]  # ordem do GtkContentFit
+HOVER_DELAY_MS = 350  # só toca o vídeo do card se o mouse parar em cima
+MAX_EMBERS = 90
+BBCODE = re.compile(r"\[/?(b|i|u|s|h[1-6]|url|img|list|olist|\*|quote|code|spoiler|noparse|hr|table|tr|th|td)"
+                    r"(=[^\]]*)?\]", re.IGNORECASE)
 
 CSS = """
 window.picker { background: #111318; color: #c7d5e0; }
-.backdrop { filter: blur(40px) brightness(0.22) saturate(1.5); }
+.backdrop { opacity: 0.3; }
 .veil { background: linear-gradient(180deg, alpha(#111318,0.35), alpha(#111318,0.9)); }
 
 headerbar.top { background: alpha(#0b0d11,0.75); border-bottom: 1px solid alpha(white,0.05);
                 box-shadow: 0 1px 24px alpha(black,0.5); min-height: 46px; }
 .brand { font-weight: 900; letter-spacing: 4px; font-size: 15px; color: white; margin: 0 14px 0 6px;
-         animation: glow 3.2s ease-in-out infinite; }
-@keyframes glow {
-  0%   { text-shadow: 0 0 6px alpha(@accent_bg_color,0.3); }
-  50%  { text-shadow: 0 0 22px alpha(@accent_bg_color,1), 0 0 2px white; }
-  100% { text-shadow: 0 0 6px alpha(@accent_bg_color,0.3); }
+         text-shadow: 0 0 14px alpha(@accent_bg_color,0.8); }
 }
 .tab { background: none; border-radius: 0; padding: 0 10px; min-height: 46px; font-size: 12px; color: alpha(#c7d5e0,0.6);
        font-weight: 800; letter-spacing: 1px; box-shadow: inset 0 0 0 0 @accent_bg_color;
@@ -64,14 +68,12 @@ flowboxchild { padding: 0; background: none; outline: none; }
             box-shadow: 0 0 0 1px alpha(@accent_bg_color,0.7), 0 0 30px alpha(@accent_bg_color,0.55),
                         0 18px 40px alpha(black,0.8); }
 .card.selected { border-color: white; box-shadow: 0 0 0 2px white, 0 0 26px alpha(white,0.35); }
-.card.active { border-color: @accent_bg_color; animation: pulse 2.4s ease-in-out infinite; }
-@keyframes pulse {
-  0%   { box-shadow: 0 0 0 2px @accent_bg_color, 0 0 12px alpha(@accent_bg_color,0.35); }
-  50%  { box-shadow: 0 0 0 3px @accent_bg_color, 0 0 40px alpha(@accent_bg_color,0.9); }
-  100% { box-shadow: 0 0 0 2px @accent_bg_color, 0 0 12px alpha(@accent_bg_color,0.35); }
+.card.active { border-color: @accent_bg_color;
+               box-shadow: 0 0 0 2px @accent_bg_color, 0 0 26px alpha(@accent_bg_color,0.7); }
 }
 .title-bar { background: linear-gradient(180deg, transparent, alpha(black,0.92)); padding: 22px 8px 6px 8px; }
 .card-title { color: white; font-size: 11px; font-weight: 700; text-shadow: 0 1px 3px black; }
+.card-hint { color: alpha(white,0.7); font-size: 9px; font-weight: 800; letter-spacing: 1px; }
 .badge { border-radius: 3px; padding: 1px 6px; font-size: 9px; font-weight: 900; margin: 6px; letter-spacing: 1px; }
 .badge.active { background: @accent_bg_color; color: @accent_fg_color; }
 .badge.video { background: alpha(#2ee6a6,0.92); color: #04150f; }
@@ -85,15 +87,15 @@ flowboxchild { padding: 0; background: none; outline: none; }
 .panel-title { font-size: 16px; font-weight: 900; color: white; }
 .meta { color: alpha(#c7d5e0,0.55); font-size: 12px; }
 .desc { color: alpha(#c7d5e0,0.8); }
+.note { color: alpha(#ffb547,0.85); font-size: 11px; }
 .tag { background: alpha(white,0.07); border-radius: 3px; padding: 2px 8px; font-size: 11px;
        color: alpha(#c7d5e0,0.85); }
 .section { font-weight: 900; letter-spacing: 2px; font-size: 11px; color: alpha(#c7d5e0,0.45); }
 .apply { min-height: 38px; border-radius: 6px; font-weight: 900; letter-spacing: 2px; color: white;
          background-image: linear-gradient(110deg, @accent_bg_color 30%, mix(@accent_bg_color,white,0.45) 50%,
                                            @accent_bg_color 70%);
-         background-size: 300% 100%; animation: shimmer 2.6s linear infinite;
-         box-shadow: 0 0 24px alpha(@accent_bg_color,0.55); }
-.apply:hover { box-shadow: 0 0 40px alpha(@accent_bg_color,0.9); }
+         background-size: 300% 100%; box-shadow: 0 0 24px alpha(@accent_bg_color,0.55); }
+.apply:hover { box-shadow: 0 0 40px alpha(@accent_bg_color,0.9); animation: shimmer 2.6s linear infinite; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0% 0; } }
 .ghost { border-radius: 6px; background: alpha(white,0.06); color: #c7d5e0; font-weight: 700; }
 .ghost:hover { background: alpha(white,0.12); }
@@ -101,18 +103,24 @@ flowboxchild { padding: 0; background: none; outline: none; }
 
 
 def _read(pj):
+    """project.json como dict, ou None se faltar, for inválido ou não for um objeto."""
     try:
         with open(pj, encoding="utf-8-sig") as f:
-            return json.load(f)
+            j = json.load(f)
     except (OSError, ValueError):
         return None
+    return j if isinstance(j, dict) else None
+
+
+def _str(v):
+    return v.strip() if isinstance(v, str) else ""
 
 
 def _kind(j):
-    kind = str(j.get("type") or "").lower()
+    kind = _str(j.get("type")).lower()
     if not kind:  # projetos oficiais antigos não têm "type"
         kind = {".mp4": "video", ".webm": "video", ".json": "scene", ".html": "web"}.get(
-            os.path.splitext(j.get("file") or "")[1].lower(), "")
+            os.path.splitext(_str(j.get("file")))[1].lower(), "")
     return kind
 
 
@@ -129,32 +137,60 @@ def load_wallpapers():
                 continue
             d = os.path.dirname(os.path.realpath(pj))
             src_dir, src = d, j
+            preset = {}
             if not j.get("type") and j.get("dependency"):  # preset: o conteúdo está no item de que depende
                 dep = os.path.join(WORKSHOP, str(j["dependency"]))
                 dj = _read(os.path.join(dep, "project.json"))
                 if not dj:
                     continue
                 src_dir, src = os.path.realpath(dep), dj
+                preset = j.get("preset") if isinstance(j.get("preset"), dict) else {}
             kind = _kind(src)
             if kind not in KIND_LABEL:
                 continue
-            video = os.path.join(src_dir, src.get("file") or "") if kind == "video" else None
+            video = os.path.join(src_dir, _str(src.get("file"))) if kind == "video" else None
             if video and not os.path.isfile(video):
                 continue
-            preview = os.path.join(d, j.get("preview") or "")
-            desc = re.sub(r"\[/?[^\]]*\]", "", str(j.get("description") or src.get("description") or "")).strip()
+            preview = os.path.join(d, _str(j.get("preview")))
+            tags = j.get("tags") or src.get("tags")
+            tags = [tags] if isinstance(tags, str) else tags
             items.append({
-                "title": (j.get("title") or os.path.basename(d)).strip(),
+                "title": _str(j.get("title")) or os.path.basename(d),
                 "kind": kind,
                 "dir": src_dir,
                 "video": video,
                 "preview": preview if os.path.isfile(preview) else None,
-                "desc": desc,
-                "tags": [str(t) for t in (j.get("tags") or src.get("tags") or [])],
+                "desc": BBCODE.sub("", _str(j.get("description")) or _str(src.get("description"))).strip(),
+                "tags": [str(t) for t in tags] if isinstance(tags, list) else [],
+                "preset": preset,
                 "source": source,
                 "id": os.path.basename(d) if source == "Workshop" else None,
             })
     return sorted(items, key=lambda i: (i["kind"] != "video", i["title"].lower()))
+
+
+def item_key(item):
+    return (item["dir"], item["title"])
+
+
+def preset_args(preset):
+    """Propriedades de um preset no formato do --set-property do linux-wallpaperengine."""
+    args = []
+    for k, v in preset.items():
+        if v is None or isinstance(v, (dict, list)):
+            continue
+        args += ["--set-property", f"{k}={str(v).lower() if isinstance(v, bool) else v}"]
+    return args
+
+
+def libcef_preload():
+    """libcef.so para LD_PRELOAD: contorna o crash 'close symbol missing' dos wallpapers web
+    (linux-wallpaperengine issue #628)."""
+    exe = shutil.which("linux-wallpaperengine")
+    candidates = ["/opt/linux-wallpaperengine/libcef.so"]
+    if exe:
+        candidates.insert(0, os.path.join(os.path.dirname(os.path.realpath(exe)), "libcef.so"))
+    return next((c for c in candidates if os.path.isfile(c)), None)
 
 
 THUMBS = os.path.join(GLib.get_user_cache_dir(), "hanabi-wallpapers")
@@ -167,18 +203,23 @@ def thumb_paths(item):
     src = item["video"] or (prev if prev.endswith((".gif", ".mp4")) else None)
     if not src:
         return None, None
-    key = hashlib.sha1(f"{src}:{os.path.getmtime(src)}".encode()).hexdigest()
+    try:
+        key = hashlib.sha1(f"{src}:{os.path.getmtime(src)}".encode()).hexdigest()
+    except OSError:  # a Steam apagou o item enquanto o app estava aberto
+        return None, None
     return src, os.path.join(THUMBS, key + ".jpg")
 
 
 def make_thumb(src, dst):
     """Extrai um frame de ~40% da duração com ffmpeg. Roda numa thread; devolve dst ou None."""
+    tmp = None
     try:
         dur = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", src],
                              capture_output=True, text=True, timeout=20).stdout.strip()
         seek = float(dur) * 0.4 if dur not in ("", "N/A") else 0.0
         os.makedirs(THUMBS, exist_ok=True)
-        tmp = dst + ".tmp.jpg"
+        fd, tmp = tempfile.mkstemp(suffix=".jpg", dir=THUMBS)
+        os.close(fd)
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{seek:.2f}", "-i", src, "-frames:v", "1",
                         "-vf", "scale=480:-2", "-q:v", "4", tmp], capture_output=True, timeout=60)
         if os.path.getsize(tmp) > 0:
@@ -186,7 +227,35 @@ def make_thumb(src, dst):
             return dst
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
+    if tmp and os.path.exists(tmp):
+        os.remove(tmp)
     return None
+
+
+def prune_thumbs(keep):
+    """Apaga miniaturas de wallpapers que não existem mais. Roda numa thread."""
+    for f in glob.glob(os.path.join(THUMBS, "*.jpg")):
+        if os.path.basename(f) not in keep:
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+
+# GtkMediaFile finalizado logo depois de criado derruba o GStreamer (segfault em gstplay).
+# Os players descartados ficam vivos (pausados) por alguns segundos antes de serem soltos.
+RETIRED = []
+
+
+def retire(media):
+    media.pause()
+    RETIRED.append(media)
+    GLib.timeout_add_seconds(5, lambda: (RETIRED.remove(media), GLib.SOURCE_REMOVE)[1])
+
+
+def static_image(item):
+    prev = item["preview"] or ""
+    return item.get("thumb") or (prev if prev and not prev.endswith(".mp4") else None)
 
 
 class AnimPic(Gtk.Picture):
@@ -197,21 +266,21 @@ class AnimPic(Gtk.Picture):
         self.gen = 0
         self.media = None
 
-    def show(self, item, animate=False):
+    def show(self, item, animate=False, light=False):
+        """light: prefere o GIF de preview (baixa resolução) ao vídeo original, que pode ser 4K."""
         self.gen += 1
         if self.media:
-            self.media.pause()
+            retire(self.media)
             self.media = None
-        prev = item["preview"] or ""
-        if item.get("thumb"):
-            self.set_filename(item["thumb"])
-        elif prev and not prev.endswith(".mp4"):
-            self.set_filename(prev)
+        img = static_image(item) if item else None
+        if img:
+            self.set_filename(img)
         else:
             self.set_paintable(None)
-        if not animate:
+        if not animate or not item:
             return
-        if item["video"] or prev.endswith(".mp4"):
+        prev = item["preview"] or ""
+        if (item["video"] and not (light and prev.endswith(".gif"))) or prev.endswith(".mp4"):
             self.media = Gtk.MediaFile.new_for_filename(item["video"] or prev)
             self.media.set_muted(True)
             self.media.set_loop(True)
@@ -219,6 +288,10 @@ class AnimPic(Gtk.Picture):
             self.set_paintable(self.media)
         elif prev.endswith(".gif"):
             Gio.File.new_for_path(prev).read_async(GLib.PRIORITY_DEFAULT, None, self._gif_stream, self.gen)
+
+    def set_playing(self, playing):
+        if self.media:
+            self.media.play() if playing else self.media.pause()
 
     def _gif_stream(self, f, res, gen):
         try:
@@ -232,29 +305,54 @@ class AnimPic(Gtk.Picture):
         except GLib.Error:
             return
         if gen == self.gen and not anim.is_static_image():
-            self._gif_step(anim.get_iter(None), gen)
+            self._gif_step(anim.get_iter(None), gen, {})
 
-    def _gif_step(self, it, gen):
+    def _gif_step(self, it, gen, textures):
         if gen != self.gen:
             return GLib.SOURCE_REMOVE
-        self.set_paintable(Gdk.Texture.new_for_pixbuf(it.get_pixbuf()))
+        # o GIF devolve os mesmos pixbufs a cada volta: converte cada quadro em textura uma vez só
+        pb = it.get_pixbuf()
+        if pb not in textures:
+            textures[pb] = Gdk.Texture.new_for_pixbuf(pb)
+        self.set_paintable(textures[pb])
         delay = it.get_delay_time()
         it.advance(None)
         if delay > 0:
-            GLib.timeout_add(max(delay, 20), self._gif_step, it, gen)
+            GLib.timeout_add(max(delay, 20), self._gif_step, it, gen, textures)
         return GLib.SOURCE_REMOVE
 
 
-class Particles(Gtk.DrawingArea):
-    """Camada de partículas desenhada com cairo: brasas ambiente atrás, explosões na frente."""
+GLOWS = {}
+
+
+def glow_texture(rgb):
+    """Sprite de brilho radial (miolo branco, borda na cor), gerado uma vez por cor."""
+    if rgb not in GLOWS:
+        size = 64
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, size, size)
+        cr = cairo.Context(surf)
+        g = cairo.RadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2)
+        g.add_color_stop_rgba(0, 1, 1, 1, 1)
+        g.add_color_stop_rgba(0.25, *rgb, 0.8)
+        g.add_color_stop_rgba(1, *rgb, 0)
+        cr.set_source(g)
+        cr.paint()
+        surf.flush()
+        GLOWS[rgb] = Gdk.MemoryTexture.new(size, size, Gdk.MemoryFormat.B8G8R8A8_PREMULTIPLIED,
+                                           GLib.Bytes.new(bytes(surf.get_data())), surf.get_stride())
+    return GLOWS[rgb]
+
+
+class Particles(Gtk.Widget):
+    """Camada de partículas: brasas ambiente atrás, explosões na frente."""
 
     def __init__(self, ambient):
         super().__init__(can_target=False, hexpand=True, vexpand=True)
         self.ambient = ambient
         self.parts, self.rings, self.flash = [], [], 0.0
         self.last = None
+        self.drawn = 0.0
         self.accent = (0.6, 0.4, 1.0)
-        self.set_draw_func(self.draw)
         self.add_tick_callback(self.tick)
 
     def spawn_ember(self, w, h, anywhere=False):
@@ -277,10 +375,13 @@ class Particles(Gtk.DrawingArea):
         now = clock.get_frame_time() / 1e6
         dt = min(now - self.last, 0.05) if self.last else 0.016
         self.last = now
+        root = self.get_root()
+        if self.ambient and root and not root.is_active():  # janela sem foco: brasas congeladas, sem CPU
+            return GLib.SOURCE_CONTINUE
         w, h = self.get_width(), self.get_height()
         if self.ambient and w > 0:
             first = not self.parts
-            while len(self.parts) < int(w * h / 14000):
+            while len(self.parts) < min(int(w * h / 14000), MAX_EMBERS):
                 self.spawn_ember(w, h, anywhere=first)
         for p in self.parts:
             p["age"] += dt
@@ -294,24 +395,28 @@ class Particles(Gtk.DrawingArea):
             r["age"] += dt
         self.rings = [r for r in self.rings if r["age"] < 0.9]
         self.flash = max(0.0, self.flash - dt * 1.4)
-        if self.parts or self.rings or self.flash:
+        # brasas lentas a ~24 fps: cada redesenho repinta a janela inteira; explosões continuam a 60 fps
+        if self.rings or self.flash or (self.parts and (not self.ambient or now - self.drawn >= 1 / 24)):
+            self.drawn = now
             self.queue_draw()
         return GLib.SOURCE_CONTINUE
 
-    def draw(self, _area, cr, w, h):
-        cr.set_operator(cairo.OPERATOR_ADD)
+    def do_snapshot(self, s):
+        # cada partícula é uma textura de brilho pronta, desenhada pela GPU (cairo em tela cheia custava ~17% de CPU)
         for p in self.parts:
             t = p["age"] / p["life"]
             a = ((1 - t) ** 1.5 if p["g"] else
                  math.sin(min(t, 1) * math.pi) * (0.55 + 0.45 * math.sin(p["age"] * 4 + p["ph"])))
+            if a <= 0.01:
+                continue
             r = p["r"] * (3 if p["g"] else 4)
-            g = cairo.RadialGradient(p["x"], p["y"], 0, p["x"], p["y"], r)
-            g.add_color_stop_rgba(0, 1, 1, 1, a)
-            g.add_color_stop_rgba(0.25, *p["c"], a * 0.8)
-            g.add_color_stop_rgba(1, *p["c"], 0)
-            cr.set_source(g)
-            cr.arc(p["x"], p["y"], r, 0, math.tau)
-            cr.fill()
+            s.push_opacity(min(a, 1.0))
+            s.append_texture(glow_texture(p["c"]), Graphene.Rect().init(p["x"] - r, p["y"] - r, 2 * r, 2 * r))
+            s.pop()
+        if self.rings or self.flash:
+            self.draw_burst(s.append_cairo(Graphene.Rect().init(0, 0, self.get_width(), self.get_height())))
+
+    def draw_burst(self, cr):
         for ring in self.rings:
             t = ring["age"] / 0.9
             if t < 0:
@@ -337,8 +442,12 @@ class Card(Gtk.Widget):
         self.h = self.hg = 0.0
         self.mx = self.my = 0.0
         self.intro = 0.0
-        self.ticking = False
+        self.intro_pending = False
+        self.intro_from = None
+        self.tick_gen = 0
         self.loaded = False
+        self.hover_id = 0
+        self.flat = None  # renderer cairo não suporta perspectiva 3D
 
         self.box = Gtk.Overlay(overflow=Gtk.Overflow.HIDDEN)
         self.box.add_css_class("card")
@@ -347,11 +456,17 @@ class Card(Gtk.Widget):
         self.pic = AnimPic()
         self.box.set_child(self.pic)
 
-        self.bar = Gtk.Revealer(child=Gtk.Label(label=item["title"], xalign=0, ellipsize=3),
-                                transition_type=Gtk.RevealerTransitionType.SLIDE_UP,
+        bar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        title = Gtk.Label(label=item["title"], xalign=0, ellipsize=3)
+        title.add_css_class("card-title")
+        bar.append(title)
+        if item["kind"] != "video":
+            hint = Gtk.Label(label="2 CLIQUES: PREVIEW", xalign=0)
+            hint.add_css_class("card-hint")
+            bar.append(hint)
+        self.bar = Gtk.Revealer(child=bar, transition_type=Gtk.RevealerTransitionType.SLIDE_UP,
                                 transition_duration=220, valign=Gtk.Align.END)
         self.bar.add_css_class("title-bar")
-        self.bar.get_child().add_css_class("card-title")
         self.box.add_overlay(self.bar)
 
         kind = Gtk.Label(label=KIND_LABEL[item["kind"]], halign=Gtk.Align.START, valign=Gtk.Align.START)
@@ -369,7 +484,8 @@ class Card(Gtk.Widget):
         motion.connect("leave", self.on_leave)
         self.add_controller(motion)
         self.set_cursor(Gdk.Cursor.new_from_name("pointer"))
-        self.set_tooltip_text(item["title"])
+        self.set_tooltip_text(item["title"] if item["kind"] == "video" else
+                              f"{item['title']}\nO GNOME só aceita vídeo no fundo: clique duplo abre o preview ao vivo")
         self.set_halign(Gtk.Align.CENTER)
 
     def do_measure(self, orientation, for_size):
@@ -384,11 +500,15 @@ class Card(Gtk.Widget):
         intro = max(0.0, min(self.intro, 1.0))
         if intro <= 0:
             return
+        if self.flat is None:
+            renderer = self.get_native().get_renderer() if self.get_native() else None
+            self.flat = type(renderer).__name__ == "CairoRenderer"
         s.save()
         s.translate(Graphene.Point().init(w / 2, h / 2 + (1 - self.intro) * 60))
-        s.perspective(900)
-        s.rotate_3d(-self.ty * 14, Graphene.Vec3.x_axis())
-        s.rotate_3d(self.tx * 14, Graphene.Vec3.y_axis())
+        if not self.flat:
+            s.perspective(900)
+            s.rotate_3d(-self.ty * 14, Graphene.Vec3.x_axis())
+            s.rotate_3d(self.tx * 14, Graphene.Vec3.y_axis())
         sc = (0.8 + 0.2 * self.intro) * (1 + 0.09 * self.h)
         s.scale(sc, sc)
         s.translate(Graphene.Point().init(-w / 2, -h / 2))
@@ -409,27 +529,54 @@ class Card(Gtk.Widget):
         s.restore()
 
     def animate(self):
-        if not self.ticking:
-            self.ticking = True
-            self.add_tick_callback(self.tick)
+        # sempre registra um tick novo: às vezes o GTK descarta o anterior (card escondido pelo filtro)
+        # sem avisar, e a entrada ficava travada em 0; os ticks antigos se desligam pela geração
+        self.tick_gen += 1
+        self.add_tick_callback(self.tick, self.tick_gen)
 
-    def tick(self, *_):
+    def start_intro(self):
+        self.intro = 0.0
+        self.intro_from = 0  # marcado no 1º frame
+        self.animate()
+
+    def tick(self, _w, clock, gen):
+        if gen != self.tick_gen:
+            return GLib.SOURCE_REMOVE
+        # um único tick por card: a entrada (antes um Adw.TimedAnimation) travava em 0 quando
+        # disputava o frame clock com o tick do hover
+        if self.intro_from is not None:
+            now = clock.get_frame_time()
+            self.intro_from = self.intro_from or now
+            t = min((now - self.intro_from) / 600_000, 1.0)
+            self.intro = 1 + 2.70158 * (t - 1) ** 3 + 1.70158 * (t - 1) ** 2  # ease-out-back
+            if t >= 1:
+                self.intro, self.intro_from = 1.0, None
         k = 0.2
         self.tx += (self.gx - self.tx) * k
         self.ty += (self.gy - self.ty) * k
         self.h += (self.hg - self.h) * k
         self.queue_draw()
-        done = abs(self.gx - self.tx) + abs(self.gy - self.ty) + abs(self.hg - self.h) < 0.002
-        if done:
-            self.ticking = False
+        done = (abs(self.gx - self.tx) + abs(self.gy - self.ty) + abs(self.hg - self.h) < 0.002
+                and self.intro_from is None)
         return GLib.SOURCE_REMOVE if done else GLib.SOURCE_CONTINUE
 
     def on_enter(self, c, x, y):
         self.hg = 1.0
         self.box.add_css_class("hot")
         self.bar.set_reveal_child(True)
-        self.pic.show(self.item, animate=True)
+        self.cancel_hover()
+        self.hover_id = GLib.timeout_add(HOVER_DELAY_MS, self._start_preview)
         self.on_motion(c, x, y)
+
+    def _start_preview(self):
+        self.hover_id = 0
+        self.pic.show(self.item, animate=True)
+        return GLib.SOURCE_REMOVE
+
+    def cancel_hover(self):
+        if self.hover_id:
+            GLib.source_remove(self.hover_id)
+            self.hover_id = 0
 
     def on_motion(self, _c, x, y):
         w, h = max(self.get_width(), 1), max(self.get_height(), 1)
@@ -441,6 +588,7 @@ class Card(Gtk.Widget):
         self.gx = self.gy = self.hg = 0.0
         self.box.remove_css_class("hot")
         self.bar.set_reveal_child(False)
+        self.cancel_hover()
         self.pic.show(self.item)
         self.animate()
 
@@ -482,15 +630,23 @@ class Panel(Gtk.Box):
         scroll = Gtk.ScrolledWindow(vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER, child=inner)
         self.append(scroll)
 
+        self.details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        inner.append(self.details)
         frame = Gtk.AspectFrame(ratio=16 / 9, obey_child=False, overflow=Gtk.Overflow.HIDDEN)
         frame.add_css_class("big-preview")
         self.preview = AnimPic()
         frame.set_child(self.preview)
-        inner.append(frame)
+        # como no Wallpaper Engine: o painel anima o GIF de preview; o vídeo original (pode ser 4K e custava
+        # ~15% de CPU tocando sem parar) só toca com o mouse em cima
+        hover = Gtk.EventControllerMotion()
+        hover.connect("enter", lambda *_: self.item and self.preview.show(self.item, animate=True))
+        hover.connect("leave", lambda *_: self.item and self.preview.show(self.item, animate=self.light_anim()))
+        frame.add_controller(hover)
+        self.details.append(frame)
 
         self.title = Gtk.Label(xalign=0, wrap=True)
         self.title.add_css_class("panel-title")
-        inner.append(self.title)
+        self.details.append(self.title)
         row = Gtk.Box(spacing=8)
         self.kind = Gtk.Label()
         self.kind.add_css_class("badge")
@@ -499,30 +655,35 @@ class Panel(Gtk.Box):
         self.meta.add_css_class("meta")
         row.append(self.kind)
         row.append(self.meta)
-        inner.append(row)
+        self.details.append(row)
         self.tags = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, column_spacing=6, row_spacing=6,
                                 max_children_per_line=6)
-        inner.append(self.tags)
+        self.details.append(self.tags)
         self.desc = Gtk.Label(xalign=0, wrap=True, lines=6, ellipsize=3, selectable=True)
         self.desc.add_css_class("desc")
-        inner.append(self.desc)
+        self.details.append(self.desc)
 
         self.apply = Gtk.Button()
         self.apply.add_css_class("apply")
-        self.apply.connect("clicked", lambda b: self.win.activate_item(self.item, b))
-        inner.append(self.apply)
+        self.apply.connect("clicked", lambda b: self.item and self.win.activate_item(self.item, b))
+        self.details.append(self.apply)
+        self.note = Gtk.Label(xalign=0, wrap=True,
+                              label="O GNOME só aceita vídeo no fundo. Scene e Web abrem num preview ao vivo "
+                                    "(linux-wallpaperengine); alguns efeitos podem não funcionar nele.")
+        self.note.add_css_class("note")
+        self.details.append(self.note)
         btns = Gtk.Box(spacing=8, homogeneous=True)
         self.workshop = Gtk.Button(label="Página no Workshop")
         self.workshop.add_css_class("ghost")
-        self.workshop.connect("clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(
+        self.workshop.connect("clicked", lambda *_: self.item and self.item["id"] and Gio.AppInfo.launch_default_for_uri(
             f"steam://url/CommunityFilePage/{self.item['id']}", None))
         folder = Gtk.Button(label="Abrir pasta")
         folder.add_css_class("ghost")
-        folder.connect("clicked", lambda *_: Gio.AppInfo.launch_default_for_uri(
+        folder.connect("clicked", lambda *_: self.item and Gio.AppInfo.launch_default_for_uri(
             Gio.File.new_for_path(self.item["dir"]).get_uri(), None))
         btns.append(self.workshop)
         btns.append(folder)
-        inner.append(btns)
+        self.details.append(btns)
 
         sec = Gtk.Label(label="HANABI", xalign=0, margin_top=14)
         sec.add_css_class("section")
@@ -538,14 +699,32 @@ class Panel(Gtk.Box):
         group.add(vol)
         fit = Adw.ComboRow(title="Ajuste na tela", model=Gtk.StringList.new(FITS))
         fit.set_selected(s.get_int("content-fit"))
-        fit.connect("notify::selected", lambda r, _p: s.set_int("content-fit", r.get_selected()))
+        fit.connect("notify::selected",
+                    lambda r, _p: s.get_int("content-fit") != r.get_selected() and s.set_int("content-fit",
+                                                                                             r.get_selected()))
+        s.connect("changed::content-fit", lambda st, k: fit.set_selected(st.get_int(k)))  # mudado pelas prefs
         group.add(fit)
         inner.append(group)
+        self.show_item(None)
+
+    def light_anim(self):
+        return bool(self.item and (self.item["preview"] or "").endswith(".gif"))
 
     def show_item(self, item):
         self.item = item
-        self.preview.show(item, animate=True)
+        self.details.set_sensitive(item is not None)
+        self.preview.show(item, animate=self.light_anim(), light=True)
+        if not item:
+            self.title.set_label("Nenhum wallpaper")
+            self.kind.set_visible(False)
+            self.meta.set_label("")
+            self.tags.remove_all()
+            self.desc.set_label("")
+            self.apply.set_label("APLICAR NO FUNDO")
+            self.note.set_visible(False)
+            return
         self.title.set_label(item["title"])
+        self.kind.set_visible(True)
         self.kind.set_label(KIND_LABEL[item["kind"]])
         for k in KIND_LABEL:
             self.kind.remove_css_class(k)
@@ -557,8 +736,8 @@ class Panel(Gtk.Box):
             lbl.add_css_class("tag")
             self.tags.append(lbl)
         self.desc.set_label(item["desc"] or "Sem descrição.")
-        self.desc.set_visible(True)
         self.apply.set_label("APLICAR NO FUNDO" if item["kind"] == "video" else "PREVIEW AO VIVO")
+        self.note.set_visible(item["kind"] != "video")
         self.workshop.set_sensitive(bool(item["id"]))
 
 
@@ -610,11 +789,17 @@ class Picker(Adw.ApplicationWindow):
                                 margin_start=16, margin_end=16, margin_bottom=20, margin_top=14,
                                 valign=Gtk.Align.START)
         self.flow.set_filter_func(self.filter)
-        grid = Gtk.ScrolledWindow(hexpand=True, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER,
-                                  child=self.flow)
+        self.grid = Gtk.ScrolledWindow(hexpand=True, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER,
+                                       child=self.flow)
+        empty = Adw.StatusPage(icon_name="preferences-desktop-wallpaper-symbolic", title="Nenhum wallpaper encontrado",
+                               description=f"Instale o Wallpaper Engine pela Steam e assine wallpapers no Workshop.\n"
+                                           f"Procurando em {STEAM}")
+        self.grid_stack = Gtk.Stack(hexpand=True)
+        self.grid_stack.add_named(self.grid, "grid")
+        self.grid_stack.add_named(empty, "empty")
         self.panel = Panel(self)
         body = Gtk.Box()
-        body.append(grid)
+        body.append(self.grid_stack)
         body.append(self.panel)
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         content.append(header)
@@ -626,22 +811,30 @@ class Picker(Adw.ApplicationWindow):
         self.set_content(root)
 
         self.connect("close-request", lambda *_: self.kill_preview())
+        self.connect("notify::is-active", lambda w, _p: self.panel.preview.set_playing(w.is_active()))
         self.populate()
-        # Steam baixa inscrições novas (e apaga as canceladas) nessa pasta: recarrega sozinho
+        # Steam baixa inscrições novas (e apaga as canceladas) nessas pastas: recarrega sozinho
         self.reload_id = 0
-        self.monitor = Gio.File.new_for_path(WORKSHOP).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
-        self.monitor.connect("changed", self.on_library_changed)
+        self.monitors = []
+        for d in (WORKSHOP, os.path.join(PROJECTS, "myprojects")):
+            if os.path.isdir(d):
+                m = Gio.File.new_for_path(d).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
+                m.connect("changed", self.on_library_changed)
+                self.monitors.append(m)
 
     def populate(self):
+        """(Re)monta a grade. Mantém o wallpaper selecionado e a rolagem; devolve as chaves carregadas."""
         items = load_wallpapers()
         counts = collections.Counter(i["kind"] for i in items)
         self.tabs["all"].set_label(f"INSTALADOS  {len(items)}")
         for k in KIND_LABEL:
             self.tabs[k].set_label(f"{KIND_LABEL[k]}  {counts[k]}")
+        prev_sel = item_key(self.selected.item) if self.selected else None
+        scroll = self.grid.get_vadjustment().get_value()
         self.flow.remove_all()
         self.cards, self.selected = [], None
         current = os.path.realpath(self.settings.get_string("video-path") or "/")
-        active = None
+        active = keep = None
         for item in items:
             card = Card(item)
             click = Gtk.GestureClick()
@@ -651,10 +844,16 @@ class Picker(Adw.ApplicationWindow):
             self.flow.append(card)
             if not active and item["video"] and os.path.realpath(item["video"]) == current:
                 active = card
+            if prev_sel and item_key(item) == prev_sel:
+                keep = card
+        self.grid_stack.set_visible_child_name("grid" if items else "empty")
         self.mark_active(active)
-        if self.cards:
-            self.select(active or self.cards[0])
+        self.select(keep or active or (self.cards[0] if self.cards else None))
+        GLib.idle_add(lambda: (self.grid.get_vadjustment().set_value(scroll), GLib.SOURCE_REMOVE)[1])
         GLib.idle_add(self.intro)
+        keep_thumbs = {os.path.basename(p) for p in (thumb_paths(i)[1] for i in items) if p}
+        THUMBER.submit(prune_thumbs, keep_thumbs)
+        return {item_key(i) for i in items}
 
     def on_library_changed(self, *_):
         if self.reload_id:
@@ -663,30 +862,31 @@ class Picker(Adw.ApplicationWindow):
 
     def _reload(self):
         self.reload_id = 0
-        before = len(self.cards)
-        self.populate()
-        diff = len(self.cards) - before
-        if diff:
-            self.toasts.add_toast(Adw.Toast(
-                title=f"{abs(diff)} wallpaper(s) {'novo(s)' if diff > 0 else 'removido(s)'} da Steam", timeout=3))
+        before = {item_key(c.item) for c in self.cards}
+        after = self.populate()
+        added, removed = len(after - before), len(before - after)
+        parts = [f"{added} novo(s)"] * bool(added) + [f"{removed} removido(s)"] * bool(removed)
+        if parts:
+            self.toasts.add_toast(Adw.Toast(title=f"Wallpapers da Steam: {', '.join(parts)}", timeout=3))
         return GLib.SOURCE_REMOVE
 
-    def intro(self):
-        """Entrada em cascata dos cards visíveis."""
+    def intro(self, replay=True):
+        """Entrada em cascata. replay=False só anima cards que acabaram de aparecer (ainda invisíveis)."""
         visible = [c for c in self.cards if self.filter(c.get_parent())]
-        for c in self.cards:
-            c.intro = 0.0
-            c.queue_draw()
-        for i, c in enumerate(visible):
+        if replay:
+            for c in visible:
+                c.intro = 0.0
+                c.queue_draw()
+        pending = [c for c in visible if c.intro == 0 and not c.intro_pending]
+        for i, c in enumerate(pending):
+            c.intro_pending = True
             GLib.timeout_add(min(i * 18, 1200), self._intro_card, c)
         return GLib.SOURCE_REMOVE
 
     def _intro_card(self, c):
+        c.intro_pending = False
         c.load_thumb()
-        target = Adw.CallbackAnimationTarget.new(lambda v: (setattr(c, "intro", v), c.queue_draw()))
-        anim = Adw.TimedAnimation.new(c, 0.0, 1.0, 600, target)
-        anim.set_easing(Adw.Easing.EASE_OUT_BACK)
-        anim.play()
+        c.start_intro()
         return GLib.SOURCE_REMOVE
 
     def filter(self, child):
@@ -696,6 +896,7 @@ class Picker(Adw.ApplicationWindow):
     def on_search(self, entry):
         self.query = entry.get_text().lower()
         self.flow.invalidate_filter()
+        self.intro(replay=False)
 
     def on_tab(self, button, key):
         if button.get_active():
@@ -704,28 +905,36 @@ class Picker(Adw.ApplicationWindow):
             self.intro()
 
     def set_backdrop(self, item):
-        pic = AnimPic()
+        # imagem minúscula ampliada = desfoque calculado uma vez só; filter: blur() em tela cheia era
+        # refeito a cada quadro (as animações de CSS redesenham a janela) e custava ~25% de CPU
+        pic = Gtk.Picture(content_fit=Gtk.ContentFit.COVER, can_shrink=True)
         pic.add_css_class("backdrop")
-        pic.show(item, animate=bool(item["video"]))
+        img = static_image(item)
+        if img:
+            try:
+                pic.set_paintable(Gdk.Texture.new_for_pixbuf(GdkPixbuf.Pixbuf.new_from_file_at_scale(img, 40, -1, True)))
+            except GLib.Error:
+                pass
         old = self.backdrop.get_visible_child()
         self.backdrop.add_child(pic)
         self.backdrop.set_visible_child(pic)
         if old:
-            GLib.timeout_add(1300, lambda: (old.show({"preview": None, "video": None}),
-                                            self.backdrop.remove(old), GLib.SOURCE_REMOVE)[-1])
+            GLib.timeout_add(1300, lambda: (self.backdrop.remove(old), GLib.SOURCE_REMOVE)[1])
 
     def mark_active(self, card):
         for c in self.cards:
             c.set_flag("active", c is card)
         if card:
+            card.load_thumb()
             self.set_backdrop(card.item)
 
     def select(self, card):
         if self.selected:
             self.selected.set_flag("selected", False)
         self.selected = card
-        card.set_flag("selected", True)
-        self.panel.show_item(card.item)
+        if card:
+            card.set_flag("selected", True)
+        self.panel.show_item(card.item if card else None)
 
     def burst_at(self, widget, x, y, item):
         ok, pt = widget.compute_point(self.fx, Graphene.Point().init(x, y))
@@ -742,48 +951,91 @@ class Picker(Adw.ApplicationWindow):
         if button:
             self.burst_at(button, button.get_width() / 2, button.get_height() / 2, item)
         if item["kind"] == "video":
+            card = next((c for c in self.cards if item_key(c.item) == item_key(item)), None)
+            if not card or not os.path.isfile(item["video"]):
+                self.toasts.add_toast(Adw.Toast(title="Esse wallpaper não está mais instalado", timeout=3))
+                return
             self.settings.set_string("video-path", item["video"])
-            self.mark_active(next(c for c in self.cards if c.item is item))
+            self.mark_active(card)
             self.toasts.add_toast(Adw.Toast(title=f"Aplicado: {item['title']}", timeout=2))
         else:
             self.open_preview(item)
 
     def kill_preview(self):
-        if self.preview_proc and self.preview_proc.poll() is None:
-            self.preview_proc.terminate()
-        self.preview_proc = None
+        """Fecha o preview e os processos filhos (os wallpapers web abrem vários processos do navegador
+        embutido, que ignoram SIGTERM)."""
+        proc, self.preview_proc = self.preview_proc, None
+        if proc and proc.poll() is None:
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(proc.pid, sig)
+                    proc.wait(1.5)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+                except ProcessLookupError:
+                    break
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)  # filhos que sobraram depois que o principal saiu
+            except ProcessLookupError:
+                pass
+            proc.poll()
         return False
 
     def open_preview(self, item):
         self.kill_preview()
+        env = dict(os.environ)
+        cef = libcef_preload() if item["kind"] == "web" else None
+        if cef:
+            env["LD_PRELOAD"] = " ".join(filter(None, [cef, env.get("LD_PRELOAD")]))
+        cmd = ["linux-wallpaperengine", "--silent", "--window", "120x80x1280x720",
+               *preset_args(item["preset"]), item["dir"]]
         try:
-            self.preview_proc = subprocess.Popen(
-                ["linux-wallpaperengine", "--silent", "--window", "120x80x1280x720", item["dir"]],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-            msg = f"Preview ao vivo: {item['title']}  (o GNOME só deixa vídeo no fundo)"
+            proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    start_new_session=True)  # grupo próprio, para fechar tudo junto
         except OSError as e:
-            msg = f"Não consegui abrir o preview: {e}"
-        self.toasts.add_toast(Adw.Toast(title=msg, timeout=3))
+            self.toasts.add_toast(Adw.Toast(title=f"Não consegui abrir o preview: {e}", timeout=4))
+            return
+        self.preview_proc = proc
+        self.toasts.add_toast(Adw.Toast(title=f"Abrindo preview ao vivo: {item['title']}", timeout=2))
+        started = GLib.get_monotonic_time()
+
+        def watch():
+            rc = proc.poll()  # também recolhe o processo quando a janela de preview é fechada
+            if rc is None:
+                return GLib.SOURCE_CONTINUE
+            if rc != 0 and GLib.get_monotonic_time() - started < 10_000_000 and proc is self.preview_proc:
+                self.toasts.add_toast(Adw.Toast(
+                    title=f"O linux-wallpaperengine não conseguiu abrir “{item['title']}” (código {rc}). "
+                          "Esse wallpaper usa algo que ele ainda não suporta.", timeout=5))
+            return GLib.SOURCE_REMOVE
+
+        GLib.timeout_add(500, watch)
 
 
 def main():
     if "--list" in sys.argv:
         items = load_wallpapers()
-        assert items and all(i["kind"] in KIND_LABEL for i in items)
-        assert all(os.path.isfile(i["video"]) for i in items if i["kind"] == "video")
+        if not items:
+            print(f"Nenhum wallpaper encontrado em {STEAM}", file=sys.stderr)
+            return 1
+        missing = [i["title"] for i in items if i["kind"] == "video" and not os.path.isfile(i["video"])]
+        if missing:
+            print(f"Vídeos sumiram: {missing}", file=sys.stderr)
+            return 1
         print(collections.Counter(i["kind"] for i in items), "sem preview:", sum(not i["preview"] for i in items))
         return 0
-    app = Adw.Application(application_id="io.github.topdarkflames.HanabiWallpapers")
+    app = Adw.Application(application_id=APP_ID)
 
-    def activate(a):
+    def startup(a):
         css = Gtk.CssProvider()
         css.load_from_string(CSS)
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.FORCE_DARK)
-        (a.get_active_window() or Picker(a)).present()
 
-    app.connect("activate", activate)
+    app.connect("startup", startup)
+    app.connect("activate", lambda a: (a.get_active_window() or Picker(a)).present())
     return app.run([])
 
 
