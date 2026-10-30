@@ -823,6 +823,10 @@ class Picker(Adw.ApplicationWindow):
         search.add_css_class("search")
         search.connect("search-changed", self.on_search)
         header.pack_end(search)
+        default = Gtk.Button(label="Padrão", tooltip_text="Sem wallpaper animado: volta ao fundo normal do GNOME",
+                             valign=Gtk.Align.CENTER)
+        default.connect("clicked", lambda _b: self.restore_default())
+        header.pack_end(default)
 
         self.flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
                                 column_spacing=12, row_spacing=12, max_children_per_line=20,
@@ -875,6 +879,7 @@ class Picker(Adw.ApplicationWindow):
         scroll = self.grid.get_vadjustment().get_value()
         self.flow.remove_all()
         self.cards, self.selected = [], None
+        hanabi_on = extension_state(HANABI_EXT) == "ACTIVE"
         current = os.path.realpath(self.settings.get_string("video-path") or "/")
         bg = read_bg_config()
         active = keep = None
@@ -890,7 +895,7 @@ class Picker(Adw.ApplicationWindow):
             elif bg:
                 if item["dir"] == bg["dir"] and item["preset"] == bg.get("preset", {}):
                     active = card
-            elif item["video"] and os.path.realpath(item["video"]) == current:
+            elif hanabi_on and item["video"] and os.path.realpath(item["video"]) == current:
                 active = card
             if prev_sel and item_key(item) == prev_sel:
                 keep = card
@@ -1033,6 +1038,12 @@ class Picker(Adw.ApplicationWindow):
                    "Extensão Wallpaper Engine Background ativada: saia e entre na sessão para o fundo aparecer")
         self.mark_active(card)
         self.toasts.add_toast(Adw.Toast(title=msg, timeout=3))
+
+    def restore_default(self):
+        write_bg_config(None)
+        set_extension(HANABI_EXT, False)
+        self.mark_active(None)
+        self.toasts.add_toast(Adw.Toast(title="Fundo padrão do GNOME restaurado", timeout=3))
 
     def kill_preview(self):
         """Fecha o preview e os processos filhos (os wallpapers web abrem vários processos do navegador
